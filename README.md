@@ -1,43 +1,50 @@
-# MultiAddonManager
+# MultiAddon-RSS
 
-A MetaMod plugin that allows you to use multiple workshop addons at once and have clients download them.
+RSS addon download preferences on Source2ZE/MultiAddonManager's KHook implementation.
 
-## ConVars
-- `mm_extra_addons <ids>` The workshop IDs of extra addons separated by commas, addons will be downloaded (if not present) and mounted (e.g. "3090239773,3070231528").
-  Once downloads are done, the map is automatically reloaded so content can be precached.
-- `mm_client_extra_addons <ids>` The workshop IDs of extra client-side only addons that will be loaded by all clients, separated by commas. These addons are not loaded or downloaded by the server.
-  Changes will only apply to future clients.
+The exact upstream base is **e85a483807b8ecac60f56e7b995c434162e989aa**.
+The earlier RSS integration used 18e8b90a53e2e1440bf79ee83c76490d4fcbb3f6.
+Those commits have divergent history but the same complete Git tree:
+`5e4183887d1dfb74951be9429d04154bf2115029`. This repository reapplies the RSS
+source changes on e85a483; no old RSS binary is relabeled as a new upstream build.
 
-- `mm_extra_addons_timeout <seconds> (default 10)` How long until clients are timed out in between connects for extra addons, timed out clients will reconnect for their current pending download.
-- `mm_addon_connection_timeout <seconds> (default 30)` // How long until clients are timed out while downloading the first required addon (usually the current map), 0 disables
-- `mm_print_searchpaths` Print all the search paths currently mounted by the server.
-- `mm_addon_mount_download <0/1> (default 0)` If enabled, the plugin will initiate an addon download every time even if it's already installed, this will guarantee that updates are applied immediately.
-- `mm_cache_clients_with_addons <0/1> (default 0)` If enabled, the plugin will keep track of which addons client SteamIDs have downloaded to prevent sending them addons when they already have them (i.e. when they rejoin or the map changes).
-- `mm_cache_clients_duration <0/seconds> (default 0)` How long to cache clients' downloaded addons list, pass 0 for forever.
-- `mm_block_disconnect_messages <0/1> (default 0)` If enabled, the plugin will block *ALL* disconnect events with the "loop shutdown" reason. This will prevent disconnect chat messsages whenever someone reconnects because they're getting an addon.
-- `mm_addon_debug <0/1> (default 0)` Whether to print some extra debug information (mainly when clients are joining)
+## Scope
 
-## Commands
-- `mm_download_addon <id>` Download an addon manually.
+- Preserve MultiAddonManager003 and its existing virtual interface.
+- Offer MultiAddonManager004 with the two appended RSS preference methods.
+- OFF excludes allowlisted RSS assets from required staged download checks while
+  retaining their mounting path. It does not exclude the current Workshop map.
+- ON retains the required addon flow. Preference writes are game-thread-only.
+- Persistence failure rolls membership back, clears the writable latch, and
+  does not run the success cache callback. Missing preferences default to ON.
+- JSONC parsing validates uint64 IDs, tokens and comments. Numeric duplicate IDs
+  are rejected even when their first value is false, before publishing output.
 
- Both of these commands require a map reload to apply changes.
-- `mm_add_addon <id>` Add an addon to the list, but don't mount.
-- `mm_remove_addon <id>` Remove an addon from the list, but don't unmount.
+The RSS allowlist remains in source. The packaged config is the neutral upstream
+example, with no automatic RSS mounts; the private operational RSS config is
+not distributed. Configure your own addon IDs and timeout policy. Existing
+installations must preserve their configuration and preference data on upgrade.
+This packaging choice does not change the RSS preference code or original local
+configuration. Config values are loaded once on plugin load.
 
- These following commands will only affect future clients:
-- `mm_add_client_addon <id>` Add a workshop ID to the global client-only addon list.
-- `mm_remove_client_addon <id>` Remove a workshop ID from the global client-only addon list.
+## Build and validation
 
-## Usage in other MetaMod plugins
-- Include the [public header](https://github.com/Source2ZE/MultiAddonManager/blob/main/public/imultiaddonmanager.h).
-- Query the interface in `AllPluginsLoaded` like this:
-```cpp
-IMultiAddonManager *pInterface = (IMultiAddonManager*)g_SMAPI->MetaFactory(MULTIADDONMANAGER_INTERFACE, nullptr, nullptr);
-```
+See BUILDING_RSS.md, dependencies.lock.json and THIRD_PARTY_NOTICES.md.
+Linux x86-64 SteamRT3 is the release target. Source commits and artifact hashes
+are recorded in each release. No Windows/SteamRT4 result or successful live
+server load is implied by compilation. No production deployment is performed.
+The old 67-check test suite is retained with two false-first duplicate rejection
+checks. Tests use the product helper directly and preserve caller output on
+failure. They do not emulate engine/KHook/network runtime behavior.
 
-## Installation
+Upstream CI is retained as a non-executable reference under docs/ rather than
+activated for this fork. No Pages or automatic release workflow is enabled.
 
-- Install [Metamod](https://cs2.poggu.me/metamod/installation/)
-- Download the [latest release package](https://github.com/Source2ZE/MultiAddonManager/releases/latest) for your OS
-- Extract the package contents into `game/csgo` on your server
-- Edit the config file at `game/csgo/cfg/multiaddonmanager/multiaddonmanager.cfg`
+## License and provenance
+
+This is a modified distribution of https://github.com/Source2ZE/MultiAddonManager.
+Original copyright notices and GPL version 3 are preserved in LICENSE and source.
+RSS changes and test additions are distributed under GPL-3.0-only. KHook and other
+dependencies have their own notices and pinned upstream sources. This project
+contains no ModSharp code, game binary, user preferences, credentials or dumps.
+All new project commit messages use English without Conventional Commit prefixes.

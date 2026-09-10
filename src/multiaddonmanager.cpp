@@ -35,6 +35,7 @@
 #include <sstream>
 #include <fstream>
 #include "iserver.h"
+#include "rss_asset_preferences.h"
 
 #include "tier0/memdbgon.h"
 
@@ -46,6 +47,42 @@ CConVar<float> mm_addon_connection_timeout("mm_addon_connection_timeout", FCVAR_
 CConVar<float> mm_extra_addons_timeout("mm_extra_addons_timeout", FCVAR_NONE, "How long until clients are timed out in between connects for extra addons in seconds, requires mm_extra_addons to be used", 10.f);
 
 CConVar<bool> mm_addon_debug("mm_addon_debug", FCVAR_NONE, "Whether to print some extra debug information", false);
+
+// RSS asset allowlist: production 5 + test 5 (order preserved, duplicates removed downstream).
+static constexpr const char *g_RssAssetAddonIds[] =
+{
+	// Production assets
+	"3782730321",
+	"3782731016",
+	"3782731693",
+	"3782732358",
+	"3777226686",
+
+	// Test assets
+	"3782764572",
+	"3782764127",
+	"3782764891",
+	"3782765512",
+	"3781515645"
+};
+
+static constexpr const char *g_RssAssetPreferencesPath = "addons/multiaddonmanager/data/rss_asset_preferences.jsonc";
+static constexpr const char *g_RssAssetPreferencesTempPath = "addons/multiaddonmanager/data/rss_asset_preferences.jsonc.tmp";
+static constexpr const char *g_RssAssetLegacyOptOutPath = "addons/multiaddonmanager/data/rss_asset_optout.txt";
+
+static bool IsRssAssetAddon(const char *pszAddon)
+{
+	if (!pszAddon || !*pszAddon)
+		return false;
+
+	for (const char *pszRssAssetAddon : g_RssAssetAddonIds)
+	{
+		if (!V_strcmp(pszAddon, pszRssAssetAddon))
+			return true;
+	}
+
+	return false;
+}
 
 void Message(const char *msg, ...)
 {
@@ -273,6 +310,8 @@ bool MultiAddonManager::Load(PluginId id, ISmmAPI *ismm, char *error, size_t max
 
 	bool g_bRequiredInitLoaded = true;
 
+	// R2: look up all three function signatures and all three vtables first.
+	// No Function Configure and no Virtual Add runs unless every lookup succeeds.
 	auto pfnSetPendingHostStateRequest = (HostStateRequest_t)engineModule.LookupSignature(g_HostStateRequest_Sig);
 
 	if (!pfnSetPendingHostStateRequest)
@@ -280,8 +319,6 @@ bool MultiAddonManager::Load(PluginId id, ISmmAPI *ismm, char *error, size_t max
 		Panic("Failed to lookup the signature for HostStateRequest\n");
 		g_bRequiredInitLoaded = false;
 	}
-
-	m_hookSetPendingHostStateRequest.Configure(pfnSetPendingHostStateRequest);
 
 	auto pfnReplyConnection = (ReplyConnection_t)engineModule.LookupSignature(g_ReplyConnection_Sig);
 
@@ -291,8 +328,6 @@ bool MultiAddonManager::Load(PluginId id, ISmmAPI *ismm, char *error, size_t max
 		g_bRequiredInitLoaded = false;
 	}
 
-	m_hookReplyConnection.Configure(pfnReplyConnection);
-	
 	auto pfnScriptGetAddon = (ScriptGetAddon_t)serverModule.LookupSignature(g_ScriptGetAddon_Sig);
 
 	if (!pfnScriptGetAddon)
@@ -300,8 +335,6 @@ bool MultiAddonManager::Load(PluginId id, ISmmAPI *ismm, char *error, size_t max
 		Panic("Failed to lookup the signature for ScriptGetAddon\n");
 		g_bRequiredInitLoaded = false;
 	}
-
-	m_hookScriptGetAddon.Configure(pfnScriptGetAddon);
 
 	if (!(g_pGameEventManagerVTable = (IGameEventManager2 *)serverModule.FindVirtualTable("CGameEventManager")))
 	{
@@ -326,6 +359,14 @@ bool MultiAddonManager::Load(PluginId id, ISmmAPI *ismm, char *error, size_t max
 		V_snprintf(error, maxlen, "One or more address lookups failed, please refer to startup logs for more information");
 		return false;
 	}
+
+	// R2: publish the full RSS preference set/latch before the first Function
+	// Configure, because a callback is possible immediately after Configure.
+	LoadRssAssetOptOutClients();
+
+	m_hookSetPendingHostStateRequest.Configure(pfnSetPendingHostStateRequest);
+	m_hookReplyConnection.Configure(pfnReplyConnection);
+	m_hookScriptGetAddon.Configure(pfnScriptGetAddon);
 
 	m_hookClientConnect.Add(g_pSource2GameClients);
 	m_hookCanHLTVClientConnect.Add(g_pSource2GameClients);
@@ -379,7 +420,10 @@ bool MultiAddonManager::Unload(char *error, size_t maxlen)
 
 void *MultiAddonManager::OnMetamodQuery(const char *iface, int *ret)
 {
-	if (V_strcmp(iface, MULTIADDONMANAGER_INTERFACE))
+	const bool bLegacyInterface = !V_strcmp(iface, MULTIADDONMANAGER_INTERFACE);
+	const bool bRssAssetsInterface = !V_strcmp(iface, MULTIADDONMANAGER_RSS_ASSETS_INTERFACE);
+
+	if (!bLegacyInterface && !bRssAssetsInterface)
 	{
 		if (ret)
 			*ret = META_IFACE_FAILED;
@@ -389,6 +433,9 @@ void *MultiAddonManager::OnMetamodQuery(const char *iface, int *ret)
 
 	if (ret)
 		*ret = META_IFACE_OK;
+
+	if (bRssAssetsInterface)
+		return static_cast<IMultiAddonManager004*>(&g_MultiAddonManager);
 
 	return static_cast<IMultiAddonManager*>(&g_MultiAddonManager);
 }
@@ -845,29 +892,213 @@ void MultiAddonManager::ClearClientAddons(uint64 steamID64)
 	}
 }
 
-void MultiAddonManager::GetClientAddons(CUtlVector<std::string> &addons, uint64 steamID64)
+bool MultiAddonManager::IsClientRssAssetsEnabled(uint64 steamID64) const
+{
+	return !steamID64 || m_RssAssetOptOutClients.find(steamID64) == m_RssAssetOptOutClients.end();
+}
+
+bool MultiAddonManager::SetClientRssAssetsEnabled(uint64 steamID64, bool bEnabled)
+{
+	// Main/game-thread-only: CS2Fixes menu/command dispatch runs serialized on
+	// the server game thread. No locking here; KHook locking does not protect RSS state.
+	if (!steamID64)
+		return false;
+	rss_prefs::RssSteamId id = static_cast<rss_prefs::RssSteamId>(steamID64);
+	std::set<rss_prefs::RssSteamId> members;
+	for (std::set<uint64>::const_iterator it = m_RssAssetOptOutClients.begin(); it != m_RssAssetOptOutClients.end(); ++it)
+		members.insert(static_cast<rss_prefs::RssSteamId>(*it));
+	const bool bOk = rss_prefs::ApplyRssPreferenceChange(m_bRssAssetPreferencesWritable, members, id, bEnabled,
+		[this, &members]() { return SaveRssAssetOptOutClientsLocked(members); },
+		[this, steamID64, bEnabled]()
+		{
+			if (!bEnabled)
+				return;
+			auto clientIt = g_ClientAddons.find(steamID64);
+			if (clientIt == g_ClientAddons.end())
+				return;
+			ClientAddonInfo_t &clientInfo = clientIt->second;
+			for (int i = clientInfo.downloadedAddons.Count() - 1; i >= 0; --i)
+			{
+				if (IsRssAssetAddon(clientInfo.downloadedAddons[i].c_str()))
+					clientInfo.downloadedAddons.Remove(i);
+			}
+			if (IsRssAssetAddon(clientInfo.currentPendingAddon.c_str()))
+				clientInfo.currentPendingAddon.clear();
+		});
+	m_RssAssetOptOutClients.clear();
+	for (std::set<rss_prefs::RssSteamId>::const_iterator it = members.begin(); it != members.end(); ++it)
+		m_RssAssetOptOutClients.insert(static_cast<uint64>(*it));
+	if (!bOk)
+	{
+		if (!m_bRssAssetPreferencesWritable)
+			Panic("RSS asset preference store not writable; setter blocked for %llu\n", steamID64);
+		else
+			Panic("Failed to persist RSS asset download preference for %llu\n", steamID64);
+		return false;
+	}
+	Message("RSS asset downloads %s for %llu; this applies on the next addon connection flow\n", bEnabled ? "enabled" : "disabled", steamID64);
+	return true;
+}
+
+void MultiAddonManager::GetClientAddons(CUtlVector<std::string> &addons, uint64 steamID64, bool bIncludeOptedOutRssAssets)
 {
 	addons.RemoveAll();
 	
 	if (!GetCurrentWorkshopMap().empty())
 		addons.AddToTail(GetCurrentWorkshopMap().c_str());
+
+	const std::string workshopMap = GetCurrentWorkshopMap();
+	const bool bSkipRssAssets = steamID64 && !bIncludeOptedOutRssAssets && !IsClientRssAssetsEnabled(steamID64);
+	auto AddClientAddon = [&addons, &workshopMap, bSkipRssAssets](const std::string &addon)
+	{
+		// Workshop maps are never excluded even if an ID collides with the RSS allowlist.
+		if (bSkipRssAssets && !( !workshopMap.empty() && addon == workshopMap ) && IsRssAssetAddon(addon.c_str()))
+			return;
+		if (addons.Find(addon.c_str()) == -1)
+			addons.AddToTail(addon);
+	};
+
 	// The list of mounted addons should never contain the workshop map.
-	addons.AddVectorToTail(m_MountedAddons);
+	FOR_EACH_VEC(m_MountedAddons, i)
+		AddClientAddon(m_MountedAddons[i]);
 	// Also make sure we don't have duplicates.
 	FOR_EACH_VEC(m_GlobalClientAddons, i)
-	{
-		if (addons.Find(m_GlobalClientAddons[i].c_str()) == -1)
-			addons.AddToTail(m_GlobalClientAddons[i].c_str());
-	}
+		AddClientAddon(m_GlobalClientAddons[i]);
 	// If we specify a client steamID64, check for the addons exclusive to this client as well.
 	if (steamID64)
 	{
 		FOR_EACH_VEC(g_ClientAddons[steamID64].addonsToLoad, i)
-		{
-			if (addons.Find(g_ClientAddons[steamID64].addonsToLoad[i].c_str()) == -1)
-				addons.AddToTail(g_ClientAddons[steamID64].addonsToLoad[i].c_str());
-		}
+			AddClientAddon(g_ClientAddons[steamID64].addonsToLoad[i]);
 	}
+}
+
+void MultiAddonManager::LoadRssAssetOptOutClients()
+{
+	m_RssAssetOptOutClients.clear();
+	m_bRssAssetPreferencesWritable = false;
+
+	const bool bMainExists = g_pFullFileSystem->FileExists(g_RssAssetPreferencesPath, "GAME");
+	if (bMainExists)
+	{
+		FileHandle_t file = g_pFullFileSystem->Open(g_RssAssetPreferencesPath, "rb", "GAME");
+		if (file == FILESYSTEM_INVALID_HANDLE)
+		{
+			Panic("Failed to open RSS asset preference JSONC; all clients default to ON\n");
+			return;
+		}
+		const unsigned int fileSize = g_pFullFileSystem->Size(file);
+		if (fileSize > 1024 * 1024)
+		{
+			g_pFullFileSystem->Close(file);
+			Panic("RSS asset preference JSONC is unexpectedly large; ignoring it\n");
+			return;
+		}
+		std::string json(fileSize, '\0');
+		const int bytesRead = fileSize ? g_pFullFileSystem->Read(json.data(), fileSize, file) : 0;
+		g_pFullFileSystem->Close(file);
+		if (bytesRead != static_cast<int>(fileSize))
+		{
+			Panic("Failed to read RSS asset preference JSONC\n");
+			return;
+		}
+		std::set<rss_prefs::RssSteamId> parsed;
+		if (!rss_prefs::ParseRssAssetPreferences(json, parsed))
+		{
+			Panic("Failed to parse RSS asset preference JSONC; all clients default to ON\n");
+			return;
+		}
+		for (std::set<rss_prefs::RssSteamId>::const_iterator it = parsed.begin(); it != parsed.end(); ++it)
+			m_RssAssetOptOutClients.insert(static_cast<uint64>(*it));
+		m_bRssAssetPreferencesWritable = true;
+		Message("Loaded %d RSS asset opt-out clients\n", static_cast<int>(m_RssAssetOptOutClients.size()));
+		return;
+	}
+
+	if (g_pFullFileSystem->FileExists(g_RssAssetLegacyOptOutPath, "GAME"))
+	{
+		FileHandle_t legacyFile = g_pFullFileSystem->Open(g_RssAssetLegacyOptOutPath, "rt", "GAME");
+		if (legacyFile == FILESYSTEM_INVALID_HANDLE)
+		{
+			Panic("Failed to open RSS asset legacy opt-out TXT\n");
+			return;
+		}
+		std::vector<std::string> lines;
+		char szLine[64];
+		while (g_pFullFileSystem->ReadLine(szLine, sizeof(szLine), legacyFile))
+			lines.push_back(std::string(szLine));
+		const bool bReadOk = g_pFullFileSystem->IsOk(legacyFile) ? true : false;
+		g_pFullFileSystem->Close(legacyFile);
+		std::set<rss_prefs::RssSteamId> parsed;
+		if (!rss_prefs::CollectLegacyOptOutIds(lines, bReadOk, parsed))
+		{
+			Panic("Failed to read RSS asset legacy opt-out TXT; not migrating\n");
+			return;
+		}
+		for (std::set<rss_prefs::RssSteamId>::const_iterator it = parsed.begin(); it != parsed.end(); ++it)
+			m_RssAssetOptOutClients.insert(static_cast<uint64>(*it));
+		if (SaveRssAssetOptOutClientsLocked(m_RssAssetOptOutClients))
+		{
+			m_bRssAssetPreferencesWritable = true;
+			Message("Migrated %d RSS asset opt-out clients from TXT to JSONC\n", static_cast<int>(m_RssAssetOptOutClients.size()));
+		}
+		else
+		{
+			m_RssAssetOptOutClients.clear();
+			Panic("Failed to migrate RSS asset preferences from TXT to JSONC\n");
+		}
+		return;
+	}
+
+	if (SaveRssAssetOptOutClientsLocked(m_RssAssetOptOutClients))
+	{
+		m_bRssAssetPreferencesWritable = true;
+		Message("Created RSS asset preference JSONC; all clients default to ON\n");
+	}
+	else
+	{
+		Panic("Failed to create RSS asset preference JSONC; all clients default to ON\n");
+	}
+}
+
+bool MultiAddonManager::SaveRssAssetOptOutClients() const
+{
+	return SaveRssAssetOptOutClientsLocked(m_RssAssetOptOutClients);
+}
+
+bool MultiAddonManager::SaveRssAssetOptOutClientsLocked(const std::set<uint64> &optOutClients) const
+{
+	std::set<rss_prefs::RssSteamId> ids;
+	for (std::set<uint64>::const_iterator it = optOutClients.begin(); it != optOutClients.end(); ++it)
+		ids.insert(static_cast<rss_prefs::RssSteamId>(*it));
+	const std::string json = rss_prefs::BuildRssAssetPreferencesJson(ids);
+
+	g_pFullFileSystem->CreateDirHierarchyForFile(g_RssAssetPreferencesPath, "GAME");
+
+	FileHandle_t file = g_pFullFileSystem->Open(g_RssAssetPreferencesTempPath, "wt", "GAME");
+	if (file == FILESYSTEM_INVALID_HANDLE)
+		return false;
+
+	bool bSuccess = g_pFullFileSystem->Write(json.data(), json.size(), file) == static_cast<int>(json.size());
+
+	g_pFullFileSystem->Flush(file);
+	if (!g_pFullFileSystem->IsOk(file))
+		bSuccess = false;
+
+	g_pFullFileSystem->Close(file);
+
+	if (!bSuccess)
+	{
+		g_pFullFileSystem->RemoveFile(g_RssAssetPreferencesTempPath, "GAME");
+		return false;
+	}
+
+	if (!g_pFullFileSystem->RenameFile(g_RssAssetPreferencesTempPath, g_RssAssetPreferencesPath, "GAME"))
+	{
+		g_pFullFileSystem->RemoveFile(g_RssAssetPreferencesTempPath, "GAME");
+		return false;
+	}
+
+	return true;
 }
 
 CON_COMMAND_F(mm_add_client_addon, "Add a workshop ID to the global client-only addon list", FCVAR_SPONLY)
@@ -976,17 +1207,33 @@ bool Hook_SendNetMessage(CServerSideClientBase *pClient, const CNetMessage *pDat
 		// This puts the client in limbo because client doesn't know how to handle multiple addons at the same time.
 		CUtlVector<std::string> addonsList;
 		StringToVector(pMsg->addons().c_str(), addonsList);
-		if (addonsList.Count() > 1)
+		CUtlVector<std::string> filteredAddonsList;
+		const std::string workshopMap = g_MultiAddonManager.GetCurrentWorkshopMap();
+		FOR_EACH_VEC(addonsList, i)
+		{
+			// Workshop maps are never filtered even if an ID collides with the RSS allowlist.
+			if (!workshopMap.empty() && addonsList[i] == workshopMap)
+				filteredAddonsList.AddToTail(addonsList[i]);
+			else if (g_MultiAddonManager.IsClientRssAssetsEnabled(steamID64) || !IsRssAssetAddon(addonsList[i].c_str()))
+				filteredAddonsList.AddToTail(addonsList[i]);
+		}
+		if (filteredAddonsList.Count() > 1)
 		{
 			// If there's more than one addon, ensure that it takes the first addon (which should be the workshop map or the first custom addon)
-			pMsg->set_addons(addonsList.Head());
+			pMsg->set_addons(filteredAddonsList.Head());
 			// Since the client will download the addon contained inside this messsage, we might as well add it to the list of client's downloaded addons.
-			clientInfo.currentPendingAddon = addonsList.Head();
+			clientInfo.currentPendingAddon = filteredAddonsList.Head();
 		}
-		else if (addonsList.Count() == 1)
+		else if (filteredAddonsList.Count() == 1)
 		{
 			// Nothing to do here, the rest of the required addons can be sent later.
-			clientInfo.currentPendingAddon = pMsg->addons();
+			clientInfo.currentPendingAddon = filteredAddonsList.Head().c_str();
+			pMsg->set_addons(filteredAddonsList.Head().c_str());
+		}
+		else
+		{
+			clientInfo.currentPendingAddon.clear();
+			pMsg->set_addons("");
 		}
 		
 		return pOriginalFunc(pClient, pData, bufType);
@@ -999,6 +1246,11 @@ bool Hook_SendNetMessage(CServerSideClientBase *pClient, const CNetMessage *pDat
 	// Check if client has downloaded everything.
 	if (addons.Count() == 0)
 	{
+		// The client already has every addon it needs, so complete the pending addon and run the connection flow once more.
+		// This gives clients connecting to the RSS map addon with only skipped RSS asset addons their fast-mount path here.
+		if (!clientInfo.currentPendingAddon.empty() && g_MultiAddonManager.IsClientRssAssetsEnabled(steamID64))
+			clientInfo.downloadedAddons.AddToTail(clientInfo.currentPendingAddon);
+		clientInfo.currentPendingAddon.clear();
 		return pOriginalFunc(pClient, pData, bufType);
 	}
 
@@ -1088,13 +1340,58 @@ void MultiAddonManager::CheckClientAddons(uint64 steamID64)
 	clientInfo.connectedState = CLIENTCONN_JOINED;
 
 	CUtlVector<std::string> addons;
-	GetClientAddons(addons, steamID64);
+	GetClientAddons(addons, steamID64, true);
 	// We don't have an extra addon set so do nothing here, also don't do anything if we're a listenserver
 	if (addons.Count() == 0 || !g_pEngineServer->IsDedicatedServer())
 		return;
 
 	if (!clientInfo.currentPendingAddon.empty())
 	{
+		// RSS gated-fast-mount: opted-out clients skip the staged RSS asset flow.
+		// When an opted-out client's Need list has shrunk to only skipped RSS
+		// entries, fast-mount the locally cached RSS assets here instead of
+		// starting downloads. Enabled clients, workshop maps, and timed-out
+		// reconnects keep the original timeout + staged flow (ON/OFF state only
+		// gates the five staged checks; workshop-map timeouts apply as before).
+		if (!IsClientRssAssetsEnabled(steamID64))
+		{
+			const std::string workshopMap = GetCurrentWorkshopMap();
+			CUtlVector<std::string> neededAddons;
+			GetClientAddons(neededAddons, steamID64);
+			FOR_EACH_VEC(clientInfo.downloadedAddons, i)
+				neededAddons.FindAndRemove(clientInfo.downloadedAddons[i]);
+			if (neededAddons.Count() == 0)
+			{
+				if (!IsRssAssetAddon(clientInfo.currentPendingAddon.c_str()) &&
+					clientInfo.downloadedAddons.Find(clientInfo.currentPendingAddon.c_str()) == -1)
+					clientInfo.downloadedAddons.AddToTail(clientInfo.currentPendingAddon);
+				CUtlVector<std::string> fullAddons;
+				GetClientAddons(fullAddons, steamID64, true);
+				CUtlVector<std::string> skippedRssAssets;
+				FOR_EACH_VEC(fullAddons, i)
+				{
+					if (fullAddons[i] == clientInfo.currentPendingAddon)
+					{
+						fullAddons.Remove(i--);
+						continue;
+					}
+					if ((workshopMap.empty() || fullAddons[i] != workshopMap) &&
+						IsRssAssetAddon(fullAddons[i].c_str()))
+						skippedRssAssets.AddToTail(fullAddons[i]);
+				}
+				if (skippedRssAssets.Count() > 0 && fullAddons.Count() == 0)
+				{
+					if (mm_addon_debug.Get())
+						Message("%s: Client %lli opted out of RSS asset downloads, fast-mounting %d cached RSS assets\n",
+							__func__, steamID64, skippedRssAssets.Count());
+					FOR_EACH_VEC(skippedRssAssets, i)
+						clientInfo.downloadedAddons.AddToTail(skippedRssAssets[i]);
+					clientInfo.currentPendingAddon.clear();
+					clientInfo.lastActiveTime = Plat_FloatTime();
+					return;
+				}
+			}
+		}
 		if (Plat_FloatTime() - clientInfo.lastActiveTime > mm_extra_addons_timeout.Get())
 		{
 			if (mm_addon_debug.Get())
@@ -1107,7 +1404,8 @@ void MultiAddonManager::CheckClientAddons(uint64 steamID64)
 				Message("%s: Client %lli has connected within the interval with the pending addon %s, will send next addon in SendNetMessage hook\n",
 					__func__, steamID64, clientInfo.currentPendingAddon.c_str());
 
-			clientInfo.downloadedAddons.AddToTail(clientInfo.currentPendingAddon);
+			if (IsClientRssAssetsEnabled(steamID64) || !IsRssAssetAddon(clientInfo.currentPendingAddon.c_str()))
+				clientInfo.downloadedAddons.AddToTail(clientInfo.currentPendingAddon);
 		}
 		// Reset the current pending addon anyway, SendNetMessage tells us which addon to download next.
 		clientInfo.currentPendingAddon.clear();
@@ -1233,12 +1531,35 @@ KHook::Return<void> MultiAddonManager::Hook_ReplyConnection(INetworkGameServer *
 	// Figure out which addons the client should be loading.
 	CUtlVector<std::string> clientAddons;
 	GetClientAddons(clientAddons, steamID64);
+	const bool bFastMountRssAssets = !IsClientRssAssetsEnabled(steamID64);
+	CUtlVector<std::string> fullMountAddons;
+	if (bFastMountRssAssets)
+		GetClientAddons(fullMountAddons, steamID64, true);
+
 	if (clientAddons.Count() == 0)
 	{
-		// No addons to send. This means the list of original addons is empty as well.
-		assert(originalAddons.IsEmpty());
 		clientInfo.currentPendingAddon.clear();
-		return {KHook::Action::Ignore};
+		if (!bFastMountRssAssets)
+		{
+			// Plain zero-list: upstream behavior, no string change, no original call.
+			assert(originalAddons.IsEmpty());
+			return {KHook::Action::Ignore};
+		}
+		if (fullMountAddons.Count() == 0)
+		{
+			// Opted out but nothing mounted at all: same plain zero-list path.
+			assert(originalAddons.IsEmpty());
+			return {KHook::Action::Ignore};
+		}
+		// OFF zero-staging: OFF skips the five staged checks, but clients that
+		// already downloaded the assets still need their IDs in the connection
+		// response so CS2 mounts them.
+		*addons = VectorToString(fullMountAddons).c_str();
+		if (mm_addon_debug.Get())
+			Message("%s: Fast-mounting addons %s for steamID64 %lli\n", __func__, addons->Get(), steamID64);
+		m_hookReplyConnection.CallOriginal(pThis, pClient);
+		*addons = originalAddons;
+		return {KHook::Action::Supersede};
 	}
 
 	if (clientInfo.connectedState != CLIENTCONN_CONNECTING)
@@ -1267,6 +1588,20 @@ KHook::Return<void> MultiAddonManager::Hook_ReplyConnection(INetworkGameServer *
 			continue;
 
 		clientAddons.Remove(i);
+	}
+
+	if (bFastMountRssAssets)
+	{
+		// Fast-mount recombine: full list order, RSS entries plus the current
+		// filtered staging entries only.
+		CUtlVector<std::string> stagedAndFastMountAddons;
+		FOR_EACH_VEC(fullMountAddons, i)
+		{
+			if (IsRssAssetAddon(fullMountAddons[i].c_str()) || clientAddons.Find(fullMountAddons[i]) != -1)
+				stagedAndFastMountAddons.AddToTail(fullMountAddons[i]);
+		}
+		clientAddons.RemoveAll();
+		clientAddons.AddVectorToTail(stagedAndFastMountAddons);
 	}
 	
 	*addons = VectorToString(clientAddons).c_str();

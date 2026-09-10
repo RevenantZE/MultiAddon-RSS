@@ -28,6 +28,7 @@
 #include "steam/steam_api_common.h"
 #include "steam/isteamugc.h"
 #include "imultiaddonmanager.h"
+#include <set>
 
 #ifdef _WIN32
 #define ROOTBIN "/bin/win64/"
@@ -45,7 +46,7 @@ class CServerSideClientBase;
 class CServerSideClient;
 struct CHostStateRequest;
 
-class MultiAddonManager : public ISmmPlugin, public IMetamodListener, public IMultiAddonManager
+class MultiAddonManager : public ISmmPlugin, public IMetamodListener, public IMultiAddonManager004
 {
 public:
 	MultiAddonManager();
@@ -90,9 +91,11 @@ public: //hooks
 	void AddClientAddon(const char *pszAddon, uint64 steamID64 = 0, bool bRefresh = false);
 	void RemoveClientAddon(const char *pszAddon, uint64 steamID64 = 0);
 	void ClearClientAddons(uint64 steamID64 = 0);
-	void GetClientAddons(CUtlVector<std::string> &addons, uint64 steamID64 = 0);
+	void GetClientAddons(CUtlVector<std::string> &addons, uint64 steamID64 = 0, bool bIncludeOptedOutRssAssets = false);
 	void CheckClientAddons(uint64 steamID64);
 	void AddTimedOutClient(uint64 steamID64) { m_TimedOutClients.insert(steamID64); }
+	bool IsClientRssAssetsEnabled(uint64 steamID64) const;
+	bool SetClientRssAssetsEnabled(uint64 steamID64, bool bEnabled);
 
 public:
 	const char *GetAuthor() override		{ return "xen"; }
@@ -136,6 +139,12 @@ private:
 	std::string m_sCurrentWorkshopMap;
 
 	std::set<uint64> m_TimedOutClients;
+	std::set<uint64> m_RssAssetOptOutClients;
+	bool m_bRssAssetPreferencesWritable = false;
+
+	void LoadRssAssetOptOutClients();
+	bool SaveRssAssetOptOutClients() const;
+	bool SaveRssAssetOptOutClientsLocked(const std::set<uint64> &optOutClients) const;
 };
 
 extern MultiAddonManager g_MultiAddonManager;

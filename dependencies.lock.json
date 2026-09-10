@@ -1,0 +1,15 @@
+{
+  "upstream_url": "https://github.com/Source2ZE/MultiAddonManager",
+  "upstream_commit": "e85a483807b8ecac60f56e7b995c434162e989aa",
+  "previous_rss_base": "18e8b90a53e2e1440bf79ee83c76490d4fcbb3f6",
+  "both_base_tree": "5e4183887d1dfb74951be9429d04154bf2115029",
+  "dependencies": {
+    "mmsource-2.0": "0066c02b2650c3ee48ed266c45d6cdeba1efe833",
+    "hl2sdk-cs2": "bd17582be4bc18970e4fe4c518359872fda8276d",
+    "hl2sdk-manifests": "25562f7019dbe9534a61a5e8b1959ea4e36a6e9e"
+  },
+  "khook": "8f6430fd5ed91de4c701a7e395f79da0c14c14ec",
+  "container": "ghcr.io/source2ze/build-containers@sha256:fe730bcab225db7a11ba8c185c868afc715445552bca33f5615acb4945a41751",
+  "packaged_config": "neutral upstream example; operational RSS cfg excluded",
+  "rss_parser_change": "value-independent seenIds duplicate check before publishing output"
+}

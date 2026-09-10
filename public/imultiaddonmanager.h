@@ -20,6 +20,7 @@
 #pragma once
 
 #define MULTIADDONMANAGER_INTERFACE "MultiAddonManager003"
+#define MULTIADDONMANAGER_RSS_ASSETS_INTERFACE "MultiAddonManager004"
 class IMultiAddonManager
 {
 public:
@@ -54,4 +55,17 @@ public:
 	virtual void AddClientAddon(const char *pszAddon, uint64 steamID64 = 0, bool bRefresh = false) = 0;
 	virtual void RemoveClientAddon(const char *pszAddon, uint64 steamID64 = 0) = 0;
 	virtual void ClearClientAddons(uint64 steamID64 = 0) = 0;
+};
+
+// RSS extension. The original 003 interface remains available for compatibility.
+// OFF skips staged checks for the five RSS asset addons but still fast-mounts
+// cached copies. Workshop maps and every other addon keep the required flow.
+class IMultiAddonManager004 : public IMultiAddonManager
+{
+public:
+	virtual bool IsClientRssAssetsEnabled(uint64 steamID64) const = 0;
+	// Main/game-thread-only. Must be called serialized on the server game thread
+	// (CS2Fixes menu/command dispatch path). No internal locking is provided and
+	// KHook internal locking does not protect RSS preference state.
+	virtual bool SetClientRssAssetsEnabled(uint64 steamID64, bool bEnabled) = 0;
 };
