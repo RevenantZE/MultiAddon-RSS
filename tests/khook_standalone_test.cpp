@@ -17,7 +17,9 @@ __attribute__((noinline)) static int Invoke(Probe* probe, int value) {
 }
 static int Foreign(Probe*, int value) { return value + 99; }
 
-__attribute__((noinline)) static int FunctionTarget(int value) {
+// Keep the target away from this harness's PLT: SafetyHook temporarily traps
+// its target page. In production the target lives in a separate engine DSO.
+__attribute__((noinline, aligned(4096))) static int FunctionTarget(int value) {
     volatile int result = value + 3;
     return result;
 }

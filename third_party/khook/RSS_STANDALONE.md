@@ -25,3 +25,5 @@ API17 uses the real API17 Metamod headers and links both libraries privately.
 It does not relabel an API18 interface. Linker archive hiding is restricted to
 these two archives so the plugin factory remains exported. The api18_khook
 branch uses the core KHook service and does not build this copy.
+Do not use blanket Bsymbolic-functions: it changes protobuf bindings against
+tier0 as well as KHook. The two private archives alone are hidden.
