@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "rss_asset_flow.h"
+#include "rss_asset_preferences.h"
 
 static int s_pass = 0;
 static int s_fail = 0;
@@ -27,6 +28,13 @@ int main()
 {
 	const std::vector<std::string> base{"map", "100", "base", "100", "200"};
 	const std::vector<std::string> extra{"100", "200", "map", "100"};
+	const auto missingMode = rss_prefs::ResolveConfiguredMode<rss_flow::Mode>(nullptr, true);
+	CHECK(Equal(rss_flow::BuildList(base, extra, "map", missingMode,
+		rss_flow::ListPurpose::ReplyMount, {}, ""), {"map", "100", "base", "200"}));
+	CHECK(Equal(rss_flow::BuildList(base, extra, "map", missingMode,
+		rss_flow::ListPurpose::Download, {}, ""), {"map", "base"}));
+	CHECK(Equal(rss_flow::BuildList(base, extra, "map", missingMode,
+		rss_flow::ListPurpose::SignonFilter, {}, ""), {"map", "base"}));
 	CHECK(Equal(rss_flow::EffectiveExtra(extra, "map"), {"100", "200"}));
 	CHECK(Equal(rss_flow::BuildList(base, extra, "map", rss_flow::Mode::Disabled,
 		rss_flow::ListPurpose::Download, {}, ""), {"map", "base"}));

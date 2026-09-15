@@ -23,6 +23,17 @@ static bool ParseFailsUnchanged(const std::string &text)
 int main()
 {
 	{
+		CHECK(rss_prefs::ResolveConfiguredMode<rss_prefs::Mode>(nullptr, true) == rss_prefs::Mode::MountOnly);
+		CHECK(rss_prefs::ResolveConfiguredMode<rss_prefs::Mode>(nullptr, false) == rss_prefs::Mode::Disabled);
+		const rss_prefs::Mode modes[] = {rss_prefs::Mode::Disabled,
+			rss_prefs::Mode::MountOnly, rss_prefs::Mode::DownloadAndMount};
+		for (const auto mode : modes)
+		{
+			CHECK(rss_prefs::ResolveConfiguredMode(&mode, true) == mode);
+			CHECK(rss_prefs::ResolveConfiguredMode(&mode, false) == mode);
+		}
+	}
+	{
 		rss_prefs::ParsedPreferences out;
 		CHECK(rss_prefs::ParseRssAssetPreferences(
 			"{/*ok*/\"version\":2,\"clients\":{"

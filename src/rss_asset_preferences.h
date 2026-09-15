@@ -23,6 +23,17 @@ enum class Mode : unsigned int
 
 typedef std::map<RssSteamId, Mode> ModeMap;
 
+// Missing preferences mount installed assets without starting downloads.
+// Unavailable preference storage retains the existing fail-closed behavior.
+// This lookup neither inserts a default nor overwrites an explicit setting.
+template <typename TMode>
+inline TMode ResolveConfiguredMode(const TMode *stored, bool preferencesAvailable)
+{
+	if (stored)
+		return *stored;
+	return preferencesAvailable ? TMode::MountOnly : TMode::Disabled;
+}
+
 struct ParsedPreferences
 {
 	unsigned int sourceVersion = 0;

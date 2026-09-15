@@ -1061,7 +1061,8 @@ void MultiAddonManager::ClearClientAddons(uint64 steamID64)
 RssAssetMode MultiAddonManager::GetClientRssAssetMode(uint64 steamID64) const
 {
 	std::map<uint64, RssAssetMode>::const_iterator it = m_RssAssetModes.find(steamID64);
-	return it == m_RssAssetModes.end() ? RssAssetMode::Disabled : it->second;
+	return rss_prefs::ResolveConfiguredMode(
+		it == m_RssAssetModes.end() ? nullptr : &it->second, m_bRssAssetPreferencesWritable);
 }
 
 bool MultiAddonManager::IsClientRssAssetsEnabled(uint64 steamID64) const
@@ -1338,7 +1339,7 @@ void MultiAddonManager::LoadRssAssetPreferences()
 		return;
 	}
 	m_bRssAssetPreferencesWritable = true;
-	Message("Created RSS asset preference v2; missing clients default to Disabled\n");
+	Message("Created RSS asset preference v2; missing clients default to MountOnly\n");
 }
 
 bool MultiAddonManager::SaveRssAssetModesLocked(const std::map<uint64, RssAssetMode> &modes) const
