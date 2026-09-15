@@ -28,7 +28,13 @@
 #include "steam/steam_api_common.h"
 #include "steam/isteamugc.h"
 #include "imultiaddonmanager.h"
+#include "rss_asset_flow.h"
+#include "rss_asset_preferences.h"
+#include <chrono>
+#include <map>
 #include <set>
+#include <unordered_map>
+#include <vector>
 
 #ifdef _WIN32
 #define ROOTBIN "/bin/win64/"
@@ -46,7 +52,34 @@ class CServerSideClientBase;
 class CServerSideClient;
 struct CHostStateRequest;
 
-class MultiAddonManager : public ISmmPlugin, public IMetamodListener, public IMultiAddonManager004
+enum class AddonListPurpose
+{
+	Download,
+	ReplyMount,
+	SignonFilter,
+	GenericSignon,
+	GenericDownload
+};
+
+struct RssClientSession
+{
+	int slot = -1;
+	int userId = -1;
+	uint64 serial = 0;
+};
+
+struct TimedOutClientToken
+{
+	uint64 steamId = 0;
+	uint64 providerEpoch = 0;
+	uint32 addonGeneration = 0;
+	uint64 sessionSerial = 0;
+	uint64 flowId = 0;
+	int slot = -1;
+	int userId = -1;
+};
+
+class MultiAddonManager : public ISmmPlugin, public IMetamodListener, public IMultiAddonManager005
 {
 public:
 	MultiAddonManager();
@@ -67,6 +100,8 @@ public: //hooks
 	KHook::Return<bool> Hook_CanHLTVClientConnect(IServerGameClients *pThis, int index, const CSteamID &steamID, int *pRejectReason);
 	KHook::Return<bool> Hook_SendNetMessage_ServerSideClient(CServerSideClientBase *pClient, const CNetMessage *pData, NetChannelBufType_t bufType);
 	KHook::Return<bool> Hook_SendNetMessage_HLTVClient(CServerSideClientBase *pClient, const CNetMessage *pData, NetChannelBufType_t bufType);
+	KHook::Return<void> Hook_DisconnectSource(CServerSideClientBase *pClient,
+		ENetworkDisconnectionReason reason, const char *pszInternalReason);
 	KHook::Return<void> Hook_SetPendingHostStateRequest(CHostStateMgr *pMgrDoNotUse, CHostStateRequest *pRequest);
 	KHook::Return<void> Hook_ReplyConnection(INetworkGameServer *pThis, CServerSideClient *pClient);
 	KHook::Return<uint64> Hook_ScriptGetAddon();
@@ -83,19 +118,32 @@ public: //hooks
 	void RefreshAddons(bool bReloadMap = false);
 	void ClearAddons();
 	void ReloadMap();
-	std::string GetCurrentWorkshopMap() { return m_sCurrentWorkshopMap; }
-	void SetCurrentWorkshopMap(const char *pszWorkshopID) { m_sCurrentWorkshopMap = pszWorkshopID; }
-	void ClearCurrentWorkshopMap() { m_sCurrentWorkshopMap.clear(); }
+	std::string GetCurrentWorkshopMap() const { return m_sCurrentWorkshopMap; }
+	void SetCurrentWorkshopMap(const char *pszWorkshopID);
+	void ClearCurrentWorkshopMap();
 
 	bool HasUGCConnection();
 	void AddClientAddon(const char *pszAddon, uint64 steamID64 = 0, bool bRefresh = false);
 	void RemoveClientAddon(const char *pszAddon, uint64 steamID64 = 0);
 	void ClearClientAddons(uint64 steamID64 = 0);
-	void GetClientAddons(CUtlVector<std::string> &addons, uint64 steamID64 = 0, bool bIncludeOptedOutRssAssets = false);
+	void GetClientAddons(CUtlVector<std::string> &addons, uint64 steamID64,
+		AddonListPurpose purpose, const std::string &currentAddon = std::string(),
+		int replySlot = -1, int replyUserId = -1);
+	bool AllowExplicitRssChangeLevel(uint64 steamID64, CServerSideClientBase *client,
+		const char *addon);
 	void CheckClientAddons(uint64 steamID64);
-	void AddTimedOutClient(uint64 steamID64) { m_TimedOutClients.insert(steamID64); }
+	bool CompleteGenericPendingAddon(uint64 steamID64, bool allowGenericRss);
+	void AddTimedOutClient(uint64 steamID64, CServerSideClient *client = nullptr);
 	bool IsClientRssAssetsEnabled(uint64 steamID64) const;
 	bool SetClientRssAssetsEnabled(uint64 steamID64, bool bEnabled);
+	RssAssetMode GetClientRssAssetMode(uint64 steamID64) const;
+	RssAssetResult SetClientRssAssetMode(uint64 steamID64, RssAssetMode mode);
+	RssAssetResult RefreshClientRssAssets(uint64 steamID64, RssAssetMode mode,
+		uint32 maxFlowSeconds, uint64 &outFlowId);
+	bool GetClientRssAssetStatus(uint64 steamID64, RssAssetStatus &inOutStatus) const;
+	bool CancelClientRssAssetFlow(uint64 steamID64, uint64 flowId);
+	bool IsRssAssetAddon(const char *pszAddon) const;
+	void OnRssAddonConfigurationChanged(bool forceGeneration = false);
 
 public:
 	const char *GetAuthor() override		{ return "xen"; }
@@ -127,6 +175,7 @@ private:
 	KHook::Virtual<IGameEventManager2, int, const char *, bool> m_hookLoadEventsFromFile;
 	KHook::Virtual<CServerSideClientBase, bool, const CNetMessage *, NetChannelBufType_t> m_hookSendNetMessage_ServerSideClient;
 	KHook::Virtual<CServerSideClientBase, bool, const CNetMessage *, NetChannelBufType_t> m_hookSendNetMessage_HLTVClient;
+	KHook::Virtual<CServerSideClientBase, void, ENetworkDisconnectionReason, const char *> m_hookDisconnectSource;
 	KHook::Function<void, CHostStateMgr *, CHostStateRequest *> m_hookSetPendingHostStateRequest;
 	KHook::Function<void, INetworkGameServer *, CServerSideClient *> m_hookReplyConnection;
 	KHook::Function<uint64> m_hookScriptGetAddon;
@@ -138,13 +187,29 @@ private:
 	// Used when reloading current map
 	std::string m_sCurrentWorkshopMap;
 
-	std::set<uint64> m_TimedOutClients;
-	std::set<uint64> m_RssAssetOptOutClients;
+	std::vector<TimedOutClientToken> m_TimedOutClients;
+	std::map<uint64, RssAssetMode> m_RssAssetModes;
+	std::unordered_map<uint64, rss_flow::Flow> m_RssAssetFlows;
+	std::unordered_map<uint64, RssClientSession> m_RssClientSessions;
+	std::unordered_map<uint64, rss_flow::DisconnectEvidence> m_RssDisconnectEvidence;
+	std::vector<std::string> m_RssEffectiveAddons;
 	bool m_bRssAssetPreferencesWritable = false;
+	bool m_bRssProviderReady = false;
+	uint32 m_nRssAddonGeneration = 1;
+	uint64 m_nRssProviderEpoch = 0;
+	uint64 m_nRssServerEpoch = 0;
+	uint64 m_nNextRssFlowId = 1;
+	uint64 m_nNextRssSessionSerial = 1;
 
-	void LoadRssAssetOptOutClients();
-	bool SaveRssAssetOptOutClients() const;
-	bool SaveRssAssetOptOutClientsLocked(const std::set<uint64> &optOutClients) const;
+	void LoadRssAssetPreferences();
+	bool SaveRssAssetModesLocked(const std::map<uint64, RssAssetMode> &modes) const;
+	std::vector<std::string> GetEffectiveRssAddons() const;
+	bool GetCurrentRssSession(uint64 steamID64, RssClientSession &session,
+		CServerSideClient **client = nullptr);
+	void AdvanceRssAssetFlows();
+	void PublishRssAssetCompletion(uint64 steamID64, const rss_flow::Flow &flow);
+	void FinishRssAssetFlow(uint64 steamID64, RssAssetFlowPhase phase, RssAssetResult result);
+	void InvalidateRssAssetCache();
 };
 
 extern MultiAddonManager g_MultiAddonManager;

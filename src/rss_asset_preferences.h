@@ -1,12 +1,11 @@
 #pragma once
-// RSS asset preference helpers (R2).
-// STL-only, C++17, -fno-exceptions, -fno-rtti compatible.
-// No Valve/Metamod headers. No C++20 API. No exception-based conversion. No RTTI.
-// Internal Steam ID type is unsigned long long. Callers convert explicitly to
-// Valve uint64 sets with element-wise static_cast (public ABI types unchanged).
+
+// STL-only RSS preference v1/v2 parser and transactional state helpers.
+// C++17, -fno-exceptions and -fno-rtti compatible.
 
 #include <cstddef>
 #include <cstdio>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -15,23 +14,35 @@ namespace rss_prefs {
 
 typedef unsigned long long RssSteamId;
 
-namespace detail {
-
-inline bool IsDigitChar(char c) { return c >= 48 && c <= 57; }
-
-inline bool IsWsChar(char c)
+enum class Mode : unsigned int
 {
-	return c == 32 || c == 9 || c == 10 || c == 13;
+	Disabled = 0,
+	MountOnly = 1,
+	DownloadAndMount = 2
+};
+
+typedef std::map<RssSteamId, Mode> ModeMap;
+
+struct ParsedPreferences
+{
+	unsigned int sourceVersion = 0;
+	ModeMap clients;
+};
+
+inline bool IsValidMode(Mode mode)
+{
+	return mode == Mode::Disabled || mode == Mode::MountOnly ||
+		mode == Mode::DownloadAndMount;
 }
 
-// Skip whitespace and //-style / /*-style comments. Comments act as
-// whitespace: tokens must still match consecutively (tr/**/ue is rejected
-// because true never appears consecutively). Returns false on NUL,
-// unterminated block comment, or unterminated line handling fault.
+namespace detail {
+
+inline bool IsDigitChar(char c) { return c >= '0' && c <= '9'; }
+inline bool IsWsChar(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+
 inline bool SkipWsAndComments(const std::string &doc, std::size_t &pos)
 {
-	const std::size_t len = doc.size();
-	while (pos < len)
+	while (pos < doc.size())
 	{
 		const char c = doc[pos];
 		if (c == 0)
@@ -41,10 +52,10 @@ inline bool SkipWsAndComments(const std::string &doc, std::size_t &pos)
 			++pos;
 			continue;
 		}
-		if (c == 47 && pos + 1 < len && doc[pos + 1] == 47)
+		if (c == '/' && pos + 1 < doc.size() && doc[pos + 1] == '/')
 		{
 			pos += 2;
-			while (pos < len && doc[pos] != 10 && doc[pos] != 13)
+			while (pos < doc.size() && doc[pos] != '\n' && doc[pos] != '\r')
 			{
 				if (doc[pos] == 0)
 					return false;
@@ -52,23 +63,23 @@ inline bool SkipWsAndComments(const std::string &doc, std::size_t &pos)
 			}
 			continue;
 		}
-		if (c == 47 && pos + 1 < len && doc[pos + 1] == 42)
+		if (c == '/' && pos + 1 < doc.size() && doc[pos + 1] == '*')
 		{
 			pos += 2;
-			bool bClosed = false;
-			while (pos < len)
+			bool closed = false;
+			while (pos < doc.size())
 			{
 				if (doc[pos] == 0)
 					return false;
-				if (doc[pos] == 42 && pos + 1 < len && doc[pos + 1] == 47)
+				if (doc[pos] == '*' && pos + 1 < doc.size() && doc[pos + 1] == '/')
 				{
 					pos += 2;
-					bClosed = true;
+					closed = true;
 					break;
 				}
 				++pos;
 			}
-			if (!bClosed)
+			if (!closed)
 				return false;
 			continue;
 		}
@@ -85,27 +96,19 @@ inline bool ConsumeChar(const std::string &doc, std::size_t &pos, char want)
 	return true;
 }
 
-// Parse double-quoted string with no escapes. Content must not contain
-// backslash or NUL and must terminate. Returns content in out.
 inline bool ParseQuotedString(const std::string &doc, std::size_t &pos, std::string &out)
 {
 	out.clear();
-	if (!ConsumeChar(doc, pos, 34))
+	if (!ConsumeChar(doc, pos, '"'))
 		return false;
 	while (pos < doc.size())
 	{
-		const char c = doc[pos];
-		if (c == 0)
+		const char c = doc[pos++];
+		if (c == 0 || c == '\\')
 			return false;
-		if (c == 92)
-			return false;
-		if (c == 34)
-		{
-			++pos;
+		if (c == '"')
 			return true;
-		}
 		out.push_back(c);
-		++pos;
 	}
 	return false;
 }
@@ -115,24 +118,19 @@ inline bool IsTokenDelimiter(const std::string &doc, std::size_t pos)
 	if (pos >= doc.size())
 		return true;
 	const char c = doc[pos];
-	return c == 32 || c == 9 || c == 10 || c == 13 || c == 44 || c == 125 || c == 58 ||
-		c == 47 || c == 34;
+	return IsWsChar(c) || c == ',' || c == '}' || c == ':' || c == '/' || c == '"';
 }
 
-// Strict decimal uint64 parse: non-empty digits, no zero value, overflow-checked.
 inline bool ParseDecimalUll(const std::string &text, RssSteamId &out)
 {
 	if (text.empty() || text.size() > 20)
 		return false;
+	RssSteamId value = 0;
 	for (std::size_t i = 0; i < text.size(); ++i)
 	{
 		if (!IsDigitChar(text[i]))
 			return false;
-	}
-	RssSteamId value = 0;
-	for (std::size_t i = 0; i < text.size(); ++i)
-	{
-		const unsigned digit = static_cast<unsigned>(text[i] - 48);
+		const unsigned int digit = static_cast<unsigned int>(text[i] - '0');
 		if (value > (18446744073709551615ULL - digit) / 10ULL)
 			return false;
 		value = value * 10ULL + digit;
@@ -143,258 +141,280 @@ inline bool ParseDecimalUll(const std::string &text, RssSteamId &out)
 	return true;
 }
 
+inline bool ParseBool(const std::string &doc, std::size_t &pos, bool &out)
+{
+	if (pos + 4 <= doc.size() && doc.compare(pos, 4, "true") == 0 &&
+		IsTokenDelimiter(doc, pos + 4))
+	{
+		out = true;
+		pos += 4;
+		return true;
+	}
+	if (pos + 5 <= doc.size() && doc.compare(pos, 5, "false") == 0 &&
+		IsTokenDelimiter(doc, pos + 5))
+	{
+		out = false;
+		pos += 5;
+		return true;
+	}
+	return false;
+}
+
+inline bool ParseModeText(const std::string &text, Mode &mode)
+{
+	if (text == "disabled")
+		mode = Mode::Disabled;
+	else if (text == "mount_only")
+		mode = Mode::MountOnly;
+	else if (text == "download_and_mount")
+		mode = Mode::DownloadAndMount;
+	else
+		return false;
+	return true;
+}
+
+template <typename ValueParser>
+inline bool ParseClientObject(const std::string &doc, std::size_t &pos,
+	std::set<RssSteamId> &seenIds, ModeMap &out, ValueParser parseValue)
+{
+	if (!ConsumeChar(doc, pos, '{'))
+		return false;
+	while (true)
+	{
+		if (!SkipWsAndComments(doc, pos))
+			return false;
+		if (pos < doc.size() && doc[pos] == '}')
+		{
+			++pos;
+			return true;
+		}
+		std::string idText;
+		if (!ParseQuotedString(doc, pos, idText))
+			return false;
+		RssSteamId id = 0;
+		if (!ParseDecimalUll(idText, id) || !seenIds.insert(id).second)
+			return false;
+		if (!SkipWsAndComments(doc, pos) || !ConsumeChar(doc, pos, ':') ||
+			!SkipWsAndComments(doc, pos))
+			return false;
+		Mode mode = Mode::Disabled;
+		if (!parseValue(doc, pos, mode))
+			return false;
+		out[id] = mode;
+		if (!SkipWsAndComments(doc, pos))
+			return false;
+		if (pos < doc.size() && doc[pos] == ',')
+		{
+			++pos;
+			continue;
+		}
+		if (pos < doc.size() && doc[pos] == '}')
+		{
+			++pos;
+			return true;
+		}
+		return false;
+	}
+}
+
 } // namespace detail
 
-// Build canonical JSONC text for a set of opt-out IDs.
-inline std::string BuildRssAssetPreferencesJson(const std::set<RssSteamId> &optOutIds)
+inline const char *ModeText(Mode mode)
+{
+	switch (mode)
+	{
+		case Mode::Disabled: return "disabled";
+		case Mode::MountOnly: return "mount_only";
+		case Mode::DownloadAndMount: return "download_and_mount";
+	}
+	return "disabled";
+}
+
+inline std::string BuildRssAssetPreferencesJson(const ModeMap &clients)
 {
 	std::string json;
 	json += "{\n";
-	json += "  // true skips the five staged RSS asset checks and fast-mounts cached assets.\n";
-	json += "  // Missing IDs default to ON and use the normal staged download flow.\n";
-	json += "  \"version\": 1,\n";
-	json += "  \"opt_out_steam_ids\": {\n";
+	json += "  // Missing Steam IDs default to disabled.\n";
+	json += "  \"version\": 2,\n";
+	json += "  \"clients\": {\n";
 	std::size_t index = 0;
-	for (std::set<RssSteamId>::const_iterator it = optOutIds.begin(); it != optOutIds.end(); ++it)
+	for (ModeMap::const_iterator it = clients.begin(); it != clients.end(); ++it)
 	{
-		char numBuf[24];
-		int numLen = 0;
-		RssSteamId v = *it;
-		if (v == 0ULL)
-		{
-			numBuf[0] = 48;
-			numLen = 1;
-		}
-		else
-		{
-			char rev[24];
-			int revLen = 0;
-			while (v > 0ULL)
-			{
-				rev[revLen++] = static_cast<char>(48 + (v % 10ULL));
-				v /= 10ULL;
-			}
-			for (int i = revLen - 1; i >= 0; --i)
-				numBuf[numLen++] = rev[i];
-		}
-		numBuf[numLen] = 0;
-		char szLine[64];
-		int n = snprintf(szLine, sizeof(szLine), "    \"%s\": true%s\n", numBuf,
-			(++index < optOutIds.size()) ? "," : "");
+		char line[112];
+		const int n = std::snprintf(line, sizeof(line), "    \"%llu\": \"%s\"%s\n",
+			it->first, ModeText(it->second), (++index < clients.size()) ? "," : "");
 		if (n > 0)
-			json.append(szLine, static_cast<std::size_t>(n));
+			json.append(line, static_cast<std::size_t>(n));
 	}
 	json += "  }\n}\n";
 	return json;
 }
 
-// Strict JSONC preference parse. On success publishes temp set into out and
-// returns true. On any failure returns false and leaves out unchanged.
-inline bool ParseRssAssetPreferences(const std::string &doc, std::set<RssSteamId> &out)
+inline bool ParseRssAssetPreferences(const std::string &doc, ParsedPreferences &out)
 {
 	for (std::size_t i = 0; i < doc.size(); ++i)
-	{
 		if (doc[i] == 0)
 			return false;
-	}
-	std::set<RssSteamId> parsed;
-	std::set<RssSteamId> seenIds;
+
+	unsigned int version = 0;
+	bool seenVersion = false;
+	bool seenClients = false;
+	bool seenOptOut = false;
+	ModeMap clients;
+	ModeMap optOut;
+	std::set<RssSteamId> seenClientIds;
+	std::set<RssSteamId> seenOptOutIds;
 	std::size_t pos = 0;
-	if (!detail::SkipWsAndComments(doc, pos))
+	if (!detail::SkipWsAndComments(doc, pos) || !detail::ConsumeChar(doc, pos, '{'))
 		return false;
-	if (!detail::ConsumeChar(doc, pos, 123))
-		return false;
-	bool bSeenVersion = false;
-	bool bSeenOptOut = false;
-	bool bNeedPair = true;
+
 	while (true)
 	{
 		if (!detail::SkipWsAndComments(doc, pos))
 			return false;
-		if (pos < doc.size() && doc[pos] == 125)
+		if (pos < doc.size() && doc[pos] == '}')
 		{
 			++pos;
 			break;
 		}
-		if (!bNeedPair)
-			return false;
 		std::string key;
-		if (!detail::ParseQuotedString(doc, pos, key))
+		if (!detail::ParseQuotedString(doc, pos, key) ||
+			!detail::SkipWsAndComments(doc, pos) || !detail::ConsumeChar(doc, pos, ':') ||
+			!detail::SkipWsAndComments(doc, pos))
 			return false;
-		if (!detail::SkipWsAndComments(doc, pos))
-			return false;
-		if (!detail::ConsumeChar(doc, pos, 58))
-			return false;
-		if (!detail::SkipWsAndComments(doc, pos))
-			return false;
+
 		if (key == "version")
 		{
-			if (bSeenVersion)
+			if (seenVersion || pos >= doc.size() || (doc[pos] != '1' && doc[pos] != '2'))
 				return false;
-			if (pos >= doc.size() || doc[pos] != 49)
-				return false;
-			++pos;
+			version = static_cast<unsigned int>(doc[pos++] - '0');
 			if (!detail::IsTokenDelimiter(doc, pos))
 				return false;
-			bSeenVersion = true;
+			seenVersion = true;
+		}
+		else if (key == "clients")
+		{
+			if (seenClients)
+				return false;
+			auto parser = [](const std::string &text, std::size_t &at, Mode &mode)
+			{
+				std::string value;
+				return detail::ParseQuotedString(text, at, value) && detail::ParseModeText(value, mode);
+			};
+			if (!detail::ParseClientObject(doc, pos, seenClientIds, clients, parser))
+				return false;
+			seenClients = true;
 		}
 		else if (key == "opt_out_steam_ids")
 		{
-			if (bSeenOptOut)
+			if (seenOptOut)
 				return false;
-			if (!detail::ConsumeChar(doc, pos, 123))
-				return false;
-			bool bInnerNeedPair = true;
-			while (true)
+			auto parser = [](const std::string &text, std::size_t &at, Mode &mode)
 			{
-				if (!detail::SkipWsAndComments(doc, pos))
+				bool value = false;
+				if (!detail::ParseBool(text, at, value))
 					return false;
-				if (pos < doc.size() && doc[pos] == 125)
-				{
-					++pos;
-					break;
-				}
-				if (!bInnerNeedPair)
-					return false;
-				std::string idText;
-				if (!detail::ParseQuotedString(doc, pos, idText))
-					return false;
-				RssSteamId id = 0ULL;
-				if (!detail::ParseDecimalUll(idText, id))
-					return false;
-				if (!seenIds.insert(id).second)
-					return false;
-				if (!detail::SkipWsAndComments(doc, pos))
-					return false;
-				if (!detail::ConsumeChar(doc, pos, 58))
-					return false;
-				if (!detail::SkipWsAndComments(doc, pos))
-					return false;
-				bool bValue = false;
-				if (pos + 4 <= doc.size() && doc.compare(pos, 4, "true") == 0 &&
-					detail::IsTokenDelimiter(doc, pos + 4))
-				{
-					bValue = true;
-					pos += 4;
-				}
-				else if (pos + 5 <= doc.size() && doc.compare(pos, 5, "false") == 0 &&
-					detail::IsTokenDelimiter(doc, pos + 5))
-				{
-					bValue = false;
-					pos += 5;
-				}
-				else
-				{
-					return false;
-				}
-				if (bValue)
-					parsed.insert(id);
-				if (!detail::SkipWsAndComments(doc, pos))
-					return false;
-				if (pos < doc.size() && doc[pos] == 44)
-				{
-					++pos;
-					bInnerNeedPair = true;
-					continue;
-				}
-				if (pos < doc.size() && doc[pos] == 125)
-				{
-					++pos;
-					break;
-				}
+				mode = value ? Mode::MountOnly : Mode::DownloadAndMount;
+				return true;
+			};
+			if (!detail::ParseClientObject(doc, pos, seenOptOutIds, optOut, parser))
 				return false;
-			}
-			bSeenOptOut = true;
+			seenOptOut = true;
 		}
 		else
 		{
 			return false;
 		}
+
 		if (!detail::SkipWsAndComments(doc, pos))
 			return false;
-		if (pos < doc.size() && doc[pos] == 44)
+		if (pos < doc.size() && doc[pos] == ',')
 		{
 			++pos;
-			bNeedPair = true;
 			continue;
 		}
-		if (pos < doc.size() && doc[pos] == 125)
+		if (pos < doc.size() && doc[pos] == '}')
 		{
 			++pos;
 			break;
 		}
 		return false;
 	}
-	if (!bSeenVersion || !bSeenOptOut)
+
+	if (!detail::SkipWsAndComments(doc, pos) || pos != doc.size() || !seenVersion)
 		return false;
-	if (!detail::SkipWsAndComments(doc, pos))
+	ParsedPreferences parsed;
+	parsed.sourceVersion = version;
+	if (version == 1)
+	{
+		if (!seenOptOut || seenClients)
+			return false;
+		parsed.clients.swap(optOut);
+	}
+	else if (version == 2)
+	{
+		if (!seenClients || seenOptOut)
+			return false;
+		parsed.clients.swap(clients);
+	}
+	else
+	{
 		return false;
-	if (pos != doc.size())
-		return false;
+	}
 	out = parsed;
 	return true;
 }
 
-// Pure legacy TXT collector. lines holds ReadLine results in order, bReadOk is
-// the post-loop IsOk state. Partial reads (bReadOk false) fail with out
-// unchanged and no publish.
-inline bool CollectLegacyOptOutIds(const std::vector<std::string> &lines, bool bReadOk,
-	std::set<RssSteamId> &out)
+inline bool CollectLegacyOptOutIds(const std::vector<std::string> &lines, bool readOk,
+	ModeMap &out)
 {
-	if (!bReadOk)
+	if (!readOk)
 		return false;
-	std::set<RssSteamId> parsed;
+	ModeMap parsed;
 	for (std::size_t i = 0; i < lines.size(); ++i)
 	{
-		const std::string &line = lines[i];
-		if (line.empty())
-			return false;
-		std::string digits = line;
-		while (!digits.empty() && (digits.back() == 10 || digits.back() == 13))
+		std::string digits = lines[i];
+		while (!digits.empty() && (digits.back() == '\n' || digits.back() == '\r'))
 			digits.pop_back();
-		if (digits.empty())
+		RssSteamId id = 0;
+		if (!detail::ParseDecimalUll(digits, id) || parsed.find(id) != parsed.end())
 			return false;
-		RssSteamId id = 0ULL;
-		if (!detail::ParseDecimalUll(digits, id))
-			return false;
-		if (parsed.find(id) != parsed.end())
-			return false;
-		parsed.insert(id);
+		parsed[id] = Mode::MountOnly;
 	}
-	out = parsed;
+	out.swap(parsed);
 	return true;
 }
 
-// Pure setter state machine used directly by the product setter and by tests.
-// Order: latch check -> same-value check -> temp membership change ->
-// persistence -> success cache. Persistence failure rolls membership back and
-// clears the latch. Cache runs exactly once on persistence success; product
-// cache callbacks clear RSS downloaded/pending caches only for ON transitions.
-template <typename PersistFn, typename CacheFn>
-inline bool ApplyRssPreferenceChange(bool &bWritableLatch, std::set<RssSteamId> &members,
-	RssSteamId steamId, bool bEnabled, PersistFn persist, CacheFn onPersisted)
+template <typename WriteFn, typename FlushFn, typename CloseFn, typename RenameFn>
+inline bool RunPreferenceWriteTransaction(WriteFn writeTemp, FlushFn flushTemp,
+	CloseFn closeTemp, RenameFn renameTemp)
 {
-	if (steamId == 0ULL)
+	// Flush and close are attempted after every opened temp write. Rename is
+	// reachable only when all durability steps succeeded.
+	const bool wrote = writeTemp();
+	const bool flushed = flushTemp();
+	const bool closed = closeTemp();
+	return wrote && flushed && closed && renameTemp();
+}
+
+template <typename PersistFn, typename CommitFn>
+inline bool ApplyRssPreferenceChange(bool &writable, ModeMap &modes, RssSteamId steamId,
+	Mode mode, PersistFn persist, CommitFn committed)
+{
+	if (!writable || steamId == 0ULL || !IsValidMode(mode))
 		return false;
-	if (!bWritableLatch)
-		return false;
-	const bool bWasEnabled = (members.find(steamId) == members.end());
-	if (bWasEnabled == bEnabled)
+	ModeMap::const_iterator current = modes.find(steamId);
+	if (current != modes.end() && current->second == mode)
 		return true;
-	if (bEnabled)
-		members.erase(steamId);
-	else
-		members.insert(steamId);
-	if (!persist())
+	ModeMap candidate = modes;
+	candidate[steamId] = mode;
+	if (!persist(candidate))
 	{
-		if (bWasEnabled)
-			members.erase(steamId);
-		else
-			members.insert(steamId);
-		bWritableLatch = false;
+		writable = false;
 		return false;
 	}
-	onPersisted();
+	modes.swap(candidate);
+	committed();
 	return true;
 }
 

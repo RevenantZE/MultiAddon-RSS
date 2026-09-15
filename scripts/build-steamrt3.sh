@@ -25,6 +25,8 @@ set -euo pipefail
 step() { set +e; "$@"; rc=$?; set -e; printf "EXIT:%s COMMAND:%s\n" "$rc" "$1"; test "$rc" -eq 0; }
 step clang++ -std=c++17 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -I/src/MultiAddonManager/src /src/MultiAddonManager/tests/rss_preferences_tests.cpp -o /evidence/rss_preferences_tests
 step /evidence/rss_preferences_tests
+step clang++ -std=c++17 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -I/src/MultiAddonManager/src /src/MultiAddonManager/tests/rss_asset_flow_tests.cpp -o /evidence/rss_asset_flow_tests
+step /evidence/rss_asset_flow_tests
 step python /src/MultiAddonManager/configure.py --enable-optimize --sdks cs2 --targets x86_64 --mms_path /deps/mmsource-2.0 --hl2sdk-root /deps --hl2sdk-manifests /deps/hl2sdk-manifests
 step ambuild -j 1
 step ambuild -j 1
