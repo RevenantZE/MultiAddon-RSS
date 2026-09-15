@@ -15,6 +15,14 @@ for sdk_target in MMSPlugin.sdk_targets:
   cxx = sdk_target.cxx
 
   binary = MMSPlugin.HL2Library(builder, cxx, MMSPlugin.plugin_name, sdk)
+  binary.compiler.defines += ['KHOOK_STANDALONE']
+  binary.compiler.linkflags += [
+    '-Wl,-Bsymbolic-functions',
+    '-Wl,--exclude-libs,libkhook.a:libsafetyhook.a',
+  ]
+  for library in MMSPlugin.libkhook + MMSPlugin.libsafetyhook:
+    if library.target.arch == binary.compiler.target.arch:
+      binary.compiler.linkflags += [library.binary]
   
   try:
     version = subprocess.check_output(['git', 'describe', '--tags', '--long']).decode('ascii').strip()

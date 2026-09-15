@@ -1,0 +1,19 @@
+# RSS API17 standalone integration
+
+Imported from alliedmodders/khook at
+`8f6430fd5ed91de4c701a7e395f79da0c14c14ec` (zlib license).
+SafetyHook is imported from alliedmodders/safetyhook at
+`ec3f698a1d9936d72c57c639536fbbedab6d7c8a` (BSL-1.0).
+Original license files and source authorship are preserved.
+Only the library sources, headers and AMBuilder files are vendored.
+
+RSS changes to detour.cpp: lazy worker startup, atomic termination flag,
+idempotent shutdown with synchronous wrapper-ID retirement, and a same-file
+destructor guard. Plugin Unload calls Shutdown after detaching its callbacks.
+Shutdown is a quiescent lifecycle operation, not safe inside an active hook
+or concurrently with new hook registration.
+
+API17 uses the real API17 Metamod headers and links both libraries privately.
+It does not relabel an API18 interface. Linker archive hiding is restricted to
+these two archives so the plugin factory remains exported. The api18_khook
+branch uses the core KHook service and does not build this copy.

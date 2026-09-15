@@ -22,6 +22,9 @@
 
 #include <stdio.h>
 #include "multiaddonmanager.h"
+#ifdef KHOOK_STANDALONE
+static_assert(METAMOD_PLAPI_VERSION == 17, "Use the pinned API17 Metamod headers");
+#endif
 #include "module.h"
 #include "utils/plat.h"
 #include "networksystem/inetworkmessages.h"
@@ -564,6 +567,9 @@ bool MultiAddonManager::Unload(char *error, size_t maxlen)
 	m_hookSendNetMessage_ServerSideClient.RemoveGlobal((CServerSideClientBase *)&g_pServerSideClientVTable);
 	m_hookSendNetMessage_HLTVClient.RemoveGlobal((CServerSideClientBase *)&g_pHLTVClientVTable);
 	m_hookDisconnectSource.RemoveGlobal((CServerSideClientBase *)&g_pServerSideClientVTable);
+#ifdef KHOOK_STANDALONE
+	KHook::Shutdown();
+#endif
 	
 	return true;
 }

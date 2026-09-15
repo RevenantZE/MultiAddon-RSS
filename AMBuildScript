@@ -280,7 +280,8 @@ class MMSPluginConfig(object):
     cxx.cxxincludes += [
       os.path.join(context.currentSourcePath),
       os.path.join(mms_core_path),	
-      os.path.join(self.mms_root, 'third_party', 'khook', 'include'),
+      os.path.join(builder.sourcePath, 'third_party', 'khook', 'include'),
+      os.path.join(self.mms_root, 'core', 'sourcehook'),
     ]
 
     defines = []
@@ -305,6 +306,16 @@ class MMSPluginConfig(object):
 MMSPlugin = MMSPluginConfig()
 MMSPlugin.detectSDKs()
 MMSPlugin.configure()
+
+# API17 has no core KHook service. Build a private standalone implementation
+# against API17 headers instead of changing the interface version number.
+for target in MMSPlugin.all_targets:
+  if target.target.platform != 'linux':
+    raise Exception('The API17 standalone build currently supports Linux only')
+MMSPlugin.libsafetyhook = []
+MMSPlugin.libkhook = []
+builder.Build('third_party/khook/third_party/safetyhook/AMBuilder', {'SafetyHook': MMSPlugin})
+builder.Build('third_party/khook/AMBuilder', {'KHook': MMSPlugin})
 
 BuildScripts = [
   'AMBuilder',
