@@ -1946,6 +1946,7 @@ protected:
 		auto it = ctx->_hook_ids_addr.find(id);
 		if (it != ctx->_hook_ids_addr.end()) {
 			ctx->_addr_hook_ids.erase(it->second);
+			ctx->_hook_ids_addr.erase(it);
 		}
 	}
 

@@ -10,6 +10,8 @@ Only the library sources, headers and AMBuilder files are vendored.
 RSS changes to detour.cpp: lazy worker startup, atomic termination flag,
 idempotent shutdown with synchronous wrapper-ID retirement, and a same-file
 destructor guard. Plugin Unload calls Shutdown after detaching its callbacks.
+The Virtual removal callback also erases its forward hook-ID entry so its
+destructor cannot remove an already-retired hook after runtime teardown.
 Shutdown is a quiescent lifecycle operation, not safe inside an active hook
 or concurrently with new hook registration.
 
