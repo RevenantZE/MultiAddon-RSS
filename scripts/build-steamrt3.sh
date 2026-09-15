@@ -29,4 +29,6 @@ step /evidence/rss_asset_flow_tests
 step python /src/MultiAddonManager/configure.py --enable-optimize --sdks cs2 --targets x86_64 --mms_path /deps/mmsource-api17 --hl2sdk-root /deps --hl2sdk-manifests /deps/hl2sdk-manifests
 step ambuild -j 1
 step ambuild -j 1
+step clang++ -std=c++17 -DKHOOK_STANDALONE -I/src/MultiAddonManager/third_party/khook/include /src/MultiAddonManager/tests/khook_standalone_test.cpp /evidence/third_party/khook/khook/linux-x86_64/libkhook.a /evidence/third_party/khook/third_party/safetyhook/safetyhook/linux-x86_64/libsafetyhook.a -lpthread -o /evidence/khook_standalone_test
+step /evidence/khook_standalone_test
 '

@@ -12,6 +12,12 @@ idempotent shutdown with synchronous wrapper-ID retirement, and a same-file
 destructor guard. Plugin Unload calls Shutdown after detaching its callbacks.
 The Virtual removal callback also erases its forward hook-ID entry so its
 destructor cannot remove an already-retired hook after runtime teardown.
+Virtual detours retain their original vtable entry and restore it before
+freeing the JIT. Teardown must run while the engine vtable is alive and no
+third-party detour is chained through this private JIT. An inability to make
+an owned vtable entry writable aborts instead of leaving a dangling jump.
+Normal plugin Unload preflights ownership/protection before changing any
+plugin state and refuses unload if a foreign vtable chain is present.
 Shutdown is a quiescent lifecycle operation, not safe inside an active hook
 or concurrently with new hook registration.
 

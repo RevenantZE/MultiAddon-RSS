@@ -95,12 +95,27 @@ namespace KHook {
 
 		bool SetupVirtual(void** vtable, int index) {
 			auto entry = vtable + index;
-			KHook::Memory::SetAccess(entry, sizeof(void*), KHook::Memory::Flags::EXECUTE | KHook::Memory::Flags::READ | KHook::Memory::Flags::WRITE);
+			if (!KHook::Memory::SetAccess(entry, sizeof(void*), KHook::Memory::Flags::EXECUTE | KHook::Memory::Flags::READ | KHook::Memory::Flags::WRITE))
+				return false;
 			_original_function = reinterpret_cast<std::uintptr_t>(*entry);
+			_virtual_entry = entry;
 			*entry = reinterpret_cast<void*>(_jit_func_ptr);
 			KHook::Memory::SetAccess(entry, sizeof(void*), KHook::Memory::Flags::EXECUTE | KHook::Memory::Flags::READ);
 			// There's no way to predict whether or not the above code will crash, just always return true
 			return true;
+		}
+
+		bool CanReleaseVirtual() const {
+			if (!_virtual_entry)
+				return true;
+			if (*_virtual_entry != reinterpret_cast<void*>(_jit_func_ptr)
+				&& *_virtual_entry != reinterpret_cast<void*>(_original_function))
+				return false;
+			if (!KHook::Memory::SetAccess(_virtual_entry, sizeof(void*),
+				KHook::Memory::Flags::EXECUTE | KHook::Memory::Flags::READ | KHook::Memory::Flags::WRITE))
+				return false;
+			return KHook::Memory::SetAccess(_virtual_entry, sizeof(void*),
+				KHook::Memory::Flags::EXECUTE | KHook::Memory::Flags::READ);
 		}
 
 	public:
@@ -161,6 +176,7 @@ namespace KHook {
 
 		// Detour details
 		std::uintptr_t _original_function;
+		void** _virtual_entry = nullptr;
 		std::uint32_t _stack_size;
 
 		// Detour library details

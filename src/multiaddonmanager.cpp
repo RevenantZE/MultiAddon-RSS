@@ -548,6 +548,13 @@ bool MultiAddonManager::Load(PluginId id, ISmmAPI *ismm, char *error, size_t max
 
 bool MultiAddonManager::Unload(char *error, size_t maxlen)
 {
+#ifdef KHOOK_STANDALONE
+	if (!KHook::CanShutdown())
+	{
+		V_snprintf(error, maxlen, "Cannot unload: standalone virtual hook ownership or protection changed");
+		return false;
+	}
+#endif
 	m_bRssProviderReady = false;
 	m_RssAssetFlows.clear();
 	m_RssClientSessions.clear();

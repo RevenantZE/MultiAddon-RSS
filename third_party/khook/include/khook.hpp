@@ -466,6 +466,8 @@ KHOOK_API void* FindOriginalVirtual(void** vtable, int index);
  * @return
  */
 KHOOK_API void Shutdown();
+// Quiescent standalone unload preflight; rejects foreign vtable chains.
+KHOOK_API bool CanShutdown();
 
 template<typename RETURN, typename... ARGS>
 class Function : public Hook<RETURN> {

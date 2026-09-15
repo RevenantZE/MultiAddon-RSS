@@ -1422,6 +1422,18 @@ DetourCapsule::DetourCapsule(std::uint32_t stack_size) :
 class EmptyClass {};
 DetourCapsule::~DetourCapsule() {
 	_in_deletion = true;
+	// Standalone shutdown destroys the JIT, unlike core-lifetime KHook.
+	// Restore only our own entry; never overwrite another hook's vtable slot.
+	if (_virtual_entry && *_virtual_entry == reinterpret_cast<void*>(_jit_func_ptr)) {
+		if (!KHook::Memory::SetAccess(_virtual_entry, sizeof(void*),
+			KHook::Memory::Flags::EXECUTE | KHook::Memory::Flags::READ | KHook::Memory::Flags::WRITE)) {
+			// Do not silently leave an engine entry pointing into freed JIT memory.
+			std::abort();
+		}
+		*_virtual_entry = reinterpret_cast<void*>(_original_function);
+		KHook::Memory::SetAccess(_virtual_entry, sizeof(void*),
+			KHook::Memory::Flags::EXECUTE | KHook::Memory::Flags::READ);
+	}
 	// Lock and unlock mutex, ensuring any other thread is done with this object
 	// Setting _in_deletion to true previously, will prevent more logic from being ran
 	_detour_mutex.lock();
@@ -1839,6 +1851,15 @@ KHOOK_API void RemoveHook(
 	}
 }
 
+KHOOK_API bool CanShutdown() {
+	std::shared_lock guard(g_hooks_detour_mutex);
+	for (const auto& entry : g_hooks_detour) {
+		if (!entry.second->CanReleaseVirtual())
+			return false;
+	}
+	return true;
+}
+
 KHOOK_API void Shutdown(
 ) {
 	// Called after plugin callbacks have been detached, never inside a hook.
@@ -1851,7 +1872,7 @@ KHOOK_API void Shutdown(
 	g_WorkersStarted = false;
 
 	// Remove through the normal path so wrapper IDs and pending inserts are
-	// retired too. Do not run remove callbacks while holding the map lock.
+	// retired too. Release this snapshot lock before the normal removal path.
 	std::vector<HookID_t> ids;
 	{
 		std::shared_lock guard(g_associated_hooks_mutex);
