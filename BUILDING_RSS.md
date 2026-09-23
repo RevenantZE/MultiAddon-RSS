@@ -6,7 +6,7 @@ and dependencies. Use a new output directory for each source commit.
 
 ```bash
 git clone --recursive https://github.com/alliedmodders/metamod-source deps/mmsource-2.0
-git -C deps/mmsource-2.0 checkout 0066c02b2650c3ee48ed266c45d6cdeba1efe833
+git -C deps/mmsource-2.0 checkout fa6f80e4662e5b96cc2e97722d812f374581dfd8
 git -C deps/mmsource-2.0 submodule update --init --recursive
 git clone https://github.com/alliedmodders/hl2sdk deps/hl2sdk-cs2
 git -C deps/hl2sdk-cs2 checkout bd17582be4bc18970e4fe4c518359872fda8276d

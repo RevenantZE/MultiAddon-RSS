@@ -11,10 +11,10 @@ check_dep() {
   test "$(git -C "$deps/$1" rev-parse HEAD)" = "$2"
   test -z "$(git -C "$deps/$1" status --porcelain)"
 }
-check_dep mmsource-2.0 0066c02b2650c3ee48ed266c45d6cdeba1efe833
+check_dep mmsource-2.0 fa6f80e4662e5b96cc2e97722d812f374581dfd8
 check_dep hl2sdk-cs2 bd17582be4bc18970e4fe4c518359872fda8276d
 check_dep hl2sdk-manifests 25562f7019dbe9534a61a5e8b1959ea4e36a6e9e
-check_dep mmsource-2.0/third_party/khook 8f6430fd5ed91de4c701a7e395f79da0c14c14ec
+check_dep mmsource-2.0/third_party/khook 40d233d160b5bf60cc3e732939142b222fbd8ece
 mkdir -p "$out"
 docker run --rm --user "$(id -u):$(id -g)" \
   -e HOME=/tmp/mam-home -e PYTHONDONTWRITEBYTECODE=1 -e CC=clang -e CXX=clang++ \
