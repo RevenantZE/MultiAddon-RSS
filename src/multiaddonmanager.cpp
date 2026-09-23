@@ -145,8 +145,11 @@ constexpr const char *g_ScriptGetAddon_Sig = "55 48 89 E5 41 55 41 54 48 8D 75 ?
 
 
 // Offsets
-constexpr int g_iServerAddonsOffset = 344;
-constexpr int g_iClientListOffset = 584;
+// CNetworkGameServer members. CS2 1.41.8.2 (2000913) moved both by +0x20: the addon
+// string read in ReplyConnection ("Sending S2C_CONNECTION to %s [addons:'%s']")
+// from 344 to 376 and the CServerSideClient list from 584 to 616.
+constexpr int g_iServerAddonsOffset = 376;
+constexpr int g_iClientListOffset = 616;
 
 #ifdef PLATFORM_WINDOWS
 constexpr int g_iSendNetMessageOffset = 15;
