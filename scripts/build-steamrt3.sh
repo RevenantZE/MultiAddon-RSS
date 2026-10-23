@@ -16,10 +16,22 @@ check_dep hl2sdk-cs2 bd17582be4bc18970e4fe4c518359872fda8276d
 check_dep hl2sdk-manifests 25562f7019dbe9534a61a5e8b1959ea4e36a6e9e
 check_dep mmsource-2.0/third_party/khook 40d233d160b5bf60cc3e732939142b222fbd8ece
 mkdir -p "$out"
+# The pinned hl2sdk lags CS2 vtable changes. Build against a copy of it with
+# patches/sdk/*.patch applied; the dependency checkout stays clean.
+sdk="$out/hl2sdk-cs2-patched"
+mkdir "$sdk"
+git -C "$deps/hl2sdk-cs2" archive HEAD | tar -x -C "$sdk"
+shopt -s nullglob
+for patch in "$src"/patches/sdk/*.patch; do
+  GIT_CEILING_DIRECTORIES="$out" git -C "$sdk" apply --ignore-whitespace "$patch"
+  echo "Applied $(basename "$patch") to $sdk"
+done
+shopt -u nullglob
 docker run --rm --user "$(id -u):$(id -g)" \
   -e HOME=/tmp/mam-home -e PYTHONDONTWRITEBYTECODE=1 -e CC=clang -e CXX=clang++ \
   -e GIT_DIR=/src/MultiAddonManager/.git -e GIT_WORK_TREE=/src/MultiAddonManager \
   -v "$src:/src/MultiAddonManager:ro" -v "$deps:/deps:ro" -v "$out:/evidence:rw" \
+  -v "$sdk:/deps/hl2sdk-cs2:ro" \
   -w /evidence ghcr.io/source2ze/build-containers@sha256:fe730bcab225db7a11ba8c185c868afc715445552bca33f5615acb4945a41751 bash -lc '
 set -euo pipefail
 step() { set +e; "$@"; rc=$?; set -e; printf "EXIT:%s COMMAND:%s\n" "$rc" "$1"; test "$rc" -eq 0; }

@@ -1,0 +1,24 @@
+The CS2 update of 2026-10-22 (1.41.9.2, 14192) added a virtual to
+CEngineServer right after MakeSpawnGroupActive: the IVEngineServer2 vtable in
+libengine2.so grew from 122 to 123 entries, with the new entry at index 65
+(this, SpawnGroupHandle_t, int). Every later method moved down one slot.
+MultiAddonManager's GetServerGlobals and IsClientFullyAuthenticated calls
+landed on the wrong function and the server crashed on startup.
+
+scripts/build-steamrt3.sh applies patches/sdk/*.patch to a copy of the pinned
+hl2sdk-cs2 in the output directory. Drop it once the pinned SDK commit declares
+the same virtual.
+
+diff --git a/public/eiface.h b/public/eiface.h
+index 5d7ad93..8be26ad 100644
+--- a/public/eiface.h
++++ b/public/eiface.h
+@@ -263,6 +263,8 @@ public:
+ 	virtual bool	IsSpawnGroupLoaded( SpawnGroupHandle_t spawnGroup ) const = 0;
+ 	virtual bool	IsSpawnGroupLoading( SpawnGroupHandle_t spawnGroup ) const = 0;
+ 	virtual void	MakeSpawnGroupActive( SpawnGroupHandle_t spawnGroup ) = 0;
++	// CS2 2026-10-22 update inserted a spawn group virtual here; every later index moved by one.
++	virtual void	unk_spawngroup_20261022( SpawnGroupHandle_t spawnGroup, int ) = 0;
+ 	virtual void	SynchronouslySpawnGroup( SpawnGroupHandle_t spawnGroup ) = 0;
+ 	virtual void	SynchronizeAndBlockUntilLoaded( SpawnGroupHandle_t spawnGroup ) = 0;
+ 

@@ -21,6 +21,11 @@ optimized x86-64 build, then runs ambuild serially twice. Failure returns nonzer
 Each command prints its actual EXIT marker. The image digest pins the toolchain;
 byte-for-byte reproducibility across filesystem paths/times is not claimed.
 
+The pinned hl2sdk commit can lag CS2 vtable changes. The script copies
+hl2sdk-cs2 into the output directory, applies patches/sdk/*.patch to the copy
+and mounts it over /deps/hl2sdk-cs2; the dependency checkout stays clean. Each
+patch header says what it fixes and when it can go.
+
 Artifacts are under package/. Keep operational config: the included cfg is a
 neutral example, not an RSS server backup. Live server load, clients joining,
 addon staging/mounting, map changes, OFF/ON toggles and failure recovery require
