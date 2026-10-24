@@ -22,6 +22,7 @@
 #include <ISmmPlugin.h>
 #include <igameevents.h>
 #include "khook.hpp"
+#include "engine/IEngineService.h"
 #include "utlqueue.h"
 #include "utlvector.h"
 #include "networksystem/inetworkserializer.h"
@@ -103,6 +104,7 @@ public: //hooks
 	KHook::Return<void> Hook_DisconnectSource(CServerSideClientBase *pClient,
 		ENetworkDisconnectionReason reason, const char *pszInternalReason);
 	KHook::Return<void> Hook_SetPendingHostStateRequest(CHostStateMgr *pMgrDoNotUse, CHostStateRequest *pRequest);
+	KHook::Return<void> Hook_SwitchToLoop(IEngineServiceMgr* pThis, const char* pszLoopModeName, KeyValues* pkvLoopOptions, uint32 nId, const char* pszAddonName, bool);
 	KHook::Return<void> Hook_ReplyConnection(INetworkGameServer *pThis, CServerSideClient *pClient);
 	KHook::Return<uint64> Hook_ScriptGetAddon();
 
@@ -176,6 +178,7 @@ private:
 	KHook::Virtual<CServerSideClientBase, bool, const CNetMessage *, NetChannelBufType_t> m_hookSendNetMessage_ServerSideClient;
 	KHook::Virtual<CServerSideClientBase, bool, const CNetMessage *, NetChannelBufType_t> m_hookSendNetMessage_HLTVClient;
 	KHook::Virtual<CServerSideClientBase, void, ENetworkDisconnectionReason, const char *> m_hookDisconnectSource;
+	KHook::Virtual<IEngineServiceMgr, void, const char*, KeyValues*, uint32, const char*, bool> m_hookSwitchToLoop;
 	KHook::Function<void, CHostStateMgr *, CHostStateRequest *> m_hookSetPendingHostStateRequest;
 	KHook::Function<void, INetworkGameServer *, CServerSideClient *> m_hookReplyConnection;
 	KHook::Function<uint64> m_hookScriptGetAddon;
