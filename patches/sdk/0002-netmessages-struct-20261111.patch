@@ -1,0 +1,141 @@
+The CS2 update of 2026-11-11 (2000943) removed the vtable from the registered
+net message object. libnetworksystem now keeps one plain 0x28 byte struct per
+message: name, an argument-less CNetMessage factory at 0x08, group name,
+message id at 0x18, category masks, group id and flag bits at 0x25.
+INetworkMessages::GetNetMessageInfo returns that pointer itself.
+
+INetworkMessages shrank from 40 to 37 entries. SerializeAbstract,
+AllocateAndCopyConstructNetMessageAbstract and DeallocateNetMessageAbstract
+are gone, FindOrCreateNetMessage moved to index 20 and takes the factory, and
+both unserialize entries gained an argument. FindNetworkMessagePartial was
+still called through the old index 14, returned garbage, and the server
+crashed in AllocateMessage() on startup. CNetMessage lost its GetName virtual.
+
+INetworkMessageInternal is now NetMessageInfo_t plus non-virtual
+GetUnscopedName, GetNetMessageInfo and AllocateMessage helpers, so callers
+compile unchanged. Checked against libnetworksystem.so 2000943 (CNetworkMessages
+vtable 0x4805d0) and the libserver.so TextMsg registration (0x17e273c).
+
+scripts/build-steamrt3.sh applies this to its copy of hl2sdk bd17582. Drop it once the pinned
+SDK commit declares the same layout.
+
+diff --git a/public/networksystem/inetworkmessages.h b/public/networksystem/inetworkmessages.h
+index 33cec25..bed859f 100644
+--- a/public/networksystem/inetworkmessages.h
++++ b/public/networksystem/inetworkmessages.h
+@@ -63,21 +63,16 @@ public:
+ 
+ 	virtual void AssociateNetMessageWithChannelCategoryAbstract(INetworkMessageInternal *pNetMessage, NetworkCategoryId nCategoryId, bool) = 0;
+ 
+-	// Passing nMessasgeId as -1 would auto-assign the id even if bAutoAssignId is false based on the message name hash.
+-	virtual INetworkMessageInternal *FindOrCreateNetMessage(int nMessageId, IProtobufBinding const *pProtoBinding, uint nMessageSize, INetworkSerializerBindingBuildFilter *pUnused, bool bCreateIfNotFound = true, bool bAutoAssignId = false) = 0;
+-
++	// CS2 2000943 moved FindOrCreateNetMessage further down and removed SerializeAbstract,
++	// AllocateAndCopyConstructNetMessageAbstract and DeallocateNetMessageAbstract
+ 	virtual bool Serialize(bf_write &pBuf, const CNetMessage *pData) = 0;
+ 
+-	virtual bool UnserializeMessageInternal( bf_read &pBuf, CNetMessage *pData ) = 0;
++	// nUnk is passed through from UnserializeFromStream; pErrReason may be nullptr
++	virtual bool UnserializeMessageInternal( bf_read &pBuf, CNetMessage *pData, int nUnk, CUtlString *pErrReason ) = 0;
+ 	virtual bool SerializeMessageInternal( bf_write &pBuf, const CNetMessage *pData ) = 0;
+ 
+ 	// Returns nullptr if failed to unserialize, reason is written to err_reason
+-	virtual CNetMessage *UnserializeFromStream(bf_read &pBuf, CUtlString &err_reason) = 0;
+-	virtual bool SerializeAbstract(bf_write &pBuf, INetworkMessageInternal *pNetMessage, const CNetMessage *pData) = 0;
+-
+-	virtual CNetMessage *AllocateAndCopyConstructNetMessageAbstract(INetworkMessageInternal *pNetMessage, const CNetMessage *pFrom) = 0;
+-
+-	virtual void DeallocateNetMessageAbstract(INetworkMessageInternal *pNetMessage, CNetMessage *pData) = 0;
++	virtual CNetMessage *UnserializeFromStream(bf_read &pBuf, int nUnk, CUtlString &err_reason) = 0;
+ 
+ 	virtual void *RegisterNetworkFieldSerializer(char const *, NetworkSerializationMode_t, NetworkableDataType_t, int, NetworkFieldSerializeCB, NetworkFieldUnserializeCB, NetworkFieldInfoCB, 
+ 		NetworkFieldMetaInfoCB, NetworkableDataCB, NetworkUnkCB001, NetworkFieldSerializeCB, NetworkFieldUnserializeCB) = 0;
+@@ -102,6 +97,11 @@ public:
+ 	virtual void unk101() = 0;
+ 	virtual void unk102() = 0;
+ 
++	// Passing nMessasgeId as -1 would auto-assign the id based on the message name hash.
++	// pfnAllocateMessage is called once to read the proto name and then stored in NetMessageInfo_t.
++	// nSignonGroup is a SignonGroup_t, bufType and bOkayToRedispatch are the game's CNetMessagePB template arguments.
++	virtual INetworkMessageInternal *FindOrCreateNetMessage(int nMessageId, CNetMessage *(*pfnAllocateMessage)(), int nSignonGroup, NetChannelBufType_t bufType, bool bOkayToRedispatch, bool bCannotBeNetworked = false) = 0;
++
+ 	// Doesn't support duplicated callbacks per field
+ 	virtual void RegisterNetworkFieldChangeCallbackInternal(char const *szFieldName, uint64, NetworkFieldChangedDelegateType_t fieldType, CUtlAbstractDelegate pCallback, NetworkFieldChangeCallbackPerformType_t cbPerformType, int unkflag ) = 0;
+ 
+diff --git a/public/networksystem/inetworkserializer.h b/public/networksystem/inetworkserializer.h
+index bdb0251..a85fd9c 100644
+--- a/public/networksystem/inetworkserializer.h
++++ b/public/networksystem/inetworkserializer.h
+@@ -44,44 +44,47 @@ typedef uint16 NetworkMessageId;
+ typedef uint8 NetworkGroupId;
+ typedef uint NetworkCategoryId;
+ 
++// Since the 2026-11-11 CS2 update (2000943) a registered net message is this plain 0x28 byte struct instead of a
++// polymorphic CNetworkSerializerPB. INetworkMessages::FindOrCreateNetMessage allocates and fills it, and
++// INetworkMessages::GetNetMessageInfo returns the pointer it is given, so the info and the message are the same object.
+ struct NetMessageInfo_t
+ {
+-	int m_nCategories;
+-	IProtobufBinding *m_pBinding;
++	CUtlString m_szName;
++	// Allocates a CNetMessagePB of this message type (operator new); free it with delete
++	CNetMessage *( *m_pfnAllocateMessage )();
+ 	CUtlString m_szGroup;
++	// int32 in the engine; message ids fit in NetworkMessageId
+ 	NetworkMessageId m_MessageId;
+-	NetworkGroupId m_GroupId;
++	int m_nCategories;
+ 
+-	// (1 << 0) - FLAG_RELIABLE
+-	// (1 << 6) - FLAG_AUTOASSIGNEDID
+-	// (1 << 7) - FLAG_UNK001
+-	uint8 m_nFlags;
++	// AssociateNetMessageWithChannelCategoryAbstract ORs the category bit into it too when its bool is true
++	int m_nRequiredHandlerCategories;
++	NetworkGroupId m_GroupId;
+ 
+-	int m_unk001;
+-	int m_unk002;
+-	bool m_bOkayToRedispatch;
++	NetChannelBufType_t m_nBufType : 5;
++	// Set by FindOrCreateNetMessage's bCannotBeNetworked; Serialize rejects the message and its id is auto-assigned
++	bool m_bCannotBeNetworked : 1;
++	// The bool template argument of the game's CNetMessagePB
++	bool m_bOkayToRedispatch : 1;
++	// Set when the message was registered without a signon group (-1)
++	bool m_bNoSignonGroup : 1;
+ };
++static_assert( sizeof( NetMessageInfo_t ) == 0x28, "NetMessageInfo_t layout changed" );
+ 
+-abstract_class INetworkMessageInternal
++// The engine's message object has no vtable anymore. The old member functions plugins call are kept as
++// non-virtual helpers over the struct so existing callers keep compiling and work against 2000943.
++class INetworkMessageInternal : public NetMessageInfo_t
+ {
+ public:
+-	virtual ~INetworkMessageInternal() = 0;
+-
+-	virtual const char *GetUnscopedName() = 0;
+-	virtual NetMessageInfo_t *GetNetMessageInfo() = 0;
+-
+-	virtual void SetMessageId( unsigned short nMessageId ) = 0;
+-
+-	virtual void AddCategoryMask( int nMask, bool ) = 0;
++	INetworkMessageInternal() = delete;
++	INetworkMessageInternal( const INetworkMessageInternal & ) = delete;
+ 
+-	virtual void SwitchMode( NetworkValidationMode_t nMode ) = 0;
++	const char *GetUnscopedName() const { return m_szName.Get(); }
+ 
+-	virtual CNetMessage *AllocateMessage() = 0;
++	NetMessageInfo_t *GetNetMessageInfo() { return this; }
++	const NetMessageInfo_t *GetNetMessageInfo() const { return this; }
+ 
+-	// Calls to INetworkMessages::SerializeMessageInternal
+-	virtual bool Serialize( bf_write &pBuf, const CNetMessage *pData ) = 0;
+-	// Calls to INetworkMessages::UnserializeMessageInternal
+-	virtual bool Unserialize( bf_read &pBuf, CNetMessage *pData ) = 0;
++	CNetMessage *AllocateMessage() const { return m_pfnAllocateMessage(); }
+ };
+ 
+ struct NetworkRecipientsFilter_t
